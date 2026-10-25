@@ -5,14 +5,16 @@ Accounts are isolated by CLAUDE_CONFIG_DIR (CLI) and by Electron
 --user-data-dir (Claude Desktop). Credential files are only checked for
 existence; their contents are never read, logged or transmitted.
 """
-import argparse, hashlib, json, os, platform, re, shlex, shutil, subprocess, sys
+# The shell hook runs `ca env --shell` before every prompt, so only what that needs loads up front. argparse,
+# hashlib, shutil and subprocess load where they are used; up front they doubled its start-up time.
+import json, os, re, shlex, sys
 
 HOME = os.path.expanduser("~")
 CONFIG_PATH = os.environ.get("CA_CONFIG") or os.path.join(HOME, ".config", "claude-accounts", "config.json")
 BASE_DIR = os.path.dirname(CONFIG_PATH)
 MODES = ("terminal", "docker", "desktop")
 IMAGE = "claude-code-ca:latest"
-SYSTEM = platform.system()  # Darwin / Linux / Windows
+SYSTEM = {"darwin": "Darwin", "win32": "Windows"}.get(sys.platform, "Linux")  # same rule as src/core.js
 # Same rule as the app (src/core.js): a letter or number first, then letters, numbers, dot, dash or underscore; 64 at most.
 ACCOUNT_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 # cmd.exe treats these as syntax outside quotes (see win_quote)
@@ -118,6 +120,7 @@ def docker_login_state(acc):
 
 def deep_status(acc):
     """Ask the official CLI (local check, prints email/plan, never the token)."""
+    import shutil, subprocess
     try:
         r = subprocess.run([shutil.which("claude") or "claude", "auth", "status", "--text"], env=claude_env(acc),
                            capture_output=True, text=True, timeout=30)
@@ -186,6 +189,7 @@ def desktop_launch(acc, system=SYSTEM):
 
 def docker_argv(repo, acc, engine="docker", worktree=None, extra=()):
     """(build, run) argv for Docker or Apple's `container` CLI (macOS 26, Apple silicon)."""
+    import hashlib
     name = "ca-" + hashlib.sha1(repo.encode()).hexdigest()[:8]
     build = [engine, "build", "-t", IMAGE, os.path.join(BASE_DIR, "docker")]
     run = [engine, "run", "--rm", "-it", "--name", name, "-v", f"{acc['docker_config_dir']}:/home/node/.claude",
@@ -255,6 +259,7 @@ def command_for(repo, b, cfg):
 
 # ---------------------------------------------------------------- CLI
 def main(argv=None):
+    import argparse, shutil, subprocess
     ap = argparse.ArgumentParser(prog="ca", description=__doc__.splitlines()[0])
     sp = ap.add_subparsers(dest="cmd", required=True)
     p = sp.add_parser("add-account"); p.add_argument("name"); p.add_argument("--config-dir"); p.add_argument("--desktop-dir"); p.add_argument("--docker-dir")
@@ -357,4 +362,6 @@ def main(argv=None):
     return 0
 
 if __name__ == "__main__":
+    if sys.argv[1:] == ["env", "--shell"]:   # the shell hook's call: answered without argparse
+        print(env_shell(load())); sys.exit(0)
     sys.exit(main() or 0)
