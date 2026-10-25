@@ -25,14 +25,17 @@ ENV CLAUDE_CONFIG_DIR=/home/node/.claude
 WORKDIR /workspace
 CMD ["claude"]
 `;
-// Windows: runs the container from a console (see windowsDocker). Paths arrive in environment variables and stay
-// inside quotes, so & ^ ( ) or % in a folder name are never read as cmd syntax. "%~dp0." is this folder; the dot
-// keeps the closing quote from being read as an escaped one.
+// Windows: runs the container from a console that starts in this folder (see windowsDocker). Paths arrive in
+// environment variables and stay inside quotes, so & ^ ( ) or % in a folder name are never read as cmd syntax.
+// Delayed expansion is switched off because a machine can turn it on for every cmd, and then ! and ^ would be.
+// The image check and build carry no path, so they use `call`, without which a batch-file docker would never
+// return here. `docker run` carries the paths and comes last, without `call`, which would expand % and double ^.
 const DOCKER_RUN_CMD = [
   '@echo off',
+  'setlocal DisableDelayedExpansion',
   'rem Written by Claude Accounts on every Docker launch.',
+  `call docker image inspect ${IMAGE} >nul 2>&1 || call docker build -t ${IMAGE} . || exit /b 1`,
   'cd /d "%CA_REPO%" || exit /b 1',
-  `docker image inspect ${IMAGE} >nul 2>&1 || docker build -t ${IMAGE} "%~dp0." || exit /b 1`,
   'docker run --rm -it --name %CA_CONTAINER% -v "%CA_DOCKER_CONFIG%:/home/node/.claude" -v "%CA_REPO%:/workspace" ' +
     `-w /workspace -e CLAUDE_CONFIG_DIR=/home/node/.claude ${IMAGE} claude %CA_CLAUDE_ARGS%`,
   '',
