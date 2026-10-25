@@ -1,0 +1,454 @@
+#!/usr/bin/env python3
+"""ca - bind each git repo to its own Claude Code account (stdlib only).
+
+Accounts are isolated by CLAUDE_CONFIG_DIR (CLI) and by Electron
+--user-data-dir (Claude Desktop). Credential files are only checked for
+existence; their contents are never read, logged or transmitted.
+"""
+import argparse, hashlib, hmac, html, json, os, platform, secrets, shlex, shutil, subprocess, sys
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import urlparse, parse_qs
+
+HOME = os.path.expanduser("~")
+CONFIG_PATH = os.environ.get("CA_CONFIG") or os.path.join(HOME, ".config", "claude-accounts", "config.json")
+BASE_DIR = os.path.dirname(CONFIG_PATH)
+MODES = ("terminal", "docker", "desktop")
+IMAGE = "claude-code-ca:latest"
+SYSTEM = platform.system()  # Darwin / Linux / Windows
+
+DOCKERFILE = """FROM node:20-slim
+RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates openssh-client \\
+ && rm -rf /var/lib/apt/lists/* && npm i -g @anthropic-ai/claude-code && npm cache clean --force
+USER node
+ENV CLAUDE_CONFIG_DIR=/home/node/.claude
+WORKDIR /workspace
+CMD ["claude"]
+"""
+
+# ---------------------------------------------------------------- config
+def load():
+    if not os.path.exists(CONFIG_PATH):
+        return {"accounts": {}, "repos": {}}
+    with open(CONFIG_PATH) as f:
+        cfg = json.load(f)
+    cfg.setdefault("accounts", {}); cfg.setdefault("repos", {})
+    return cfg
+
+def save(cfg):
+    os.makedirs(BASE_DIR, exist_ok=True)
+    tmp = CONFIG_PATH + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(cfg, f, indent=2, sort_keys=True)
+    os.replace(tmp, CONFIG_PATH)
+
+def norm(p):
+    return os.path.realpath(os.path.expanduser(p))
+
+def add_account(cfg, name, config_dir=None, desktop_dir=None, docker_dir=None):
+    if not name or any(c in name for c in "/\\ "):
+        raise SystemExit(f"invalid account name: {name!r}")
+    root = os.path.join(BASE_DIR, "accounts", name)
+    acc = {
+        "config_dir": norm(config_dir or os.path.join(root, "claude")),
+        "desktop_user_data_dir": norm(desktop_dir or os.path.join(root, "desktop")),
+        # separate dir for container logins: on macOS the host login lives in the
+        # Keychain, which a Linux container cannot see, so containers log in themselves.
+        "docker_config_dir": norm(docker_dir or os.path.join(root, "docker-claude")),
+    }
+    for d in acc.values():
+        os.makedirs(d, mode=0o700, exist_ok=True)
+    cfg["accounts"][name] = acc
+    return acc
+
+def bind(cfg, repo, account, mode="terminal"):
+    if account not in cfg["accounts"]:
+        raise SystemExit(f"unknown account {account!r}; run: ca add-account {account}")
+    if mode not in MODES:
+        raise SystemExit(f"mode must be one of {MODES}")
+    path = norm(repo)
+    if not os.path.isdir(path):
+        raise SystemExit(f"not a directory: {path}")
+    cfg["repos"][path] = {"account": account, "mode": mode}
+    return path
+
+def find_repo(cfg, path=None):
+    """Return (repo_path, binding) for path or its nearest bound parent."""
+    p = norm(path or os.getcwd())
+    while True:
+        if p in cfg["repos"]:
+            return p, cfg["repos"][p]
+        parent = os.path.dirname(p)
+        if parent == p:
+            return None, None
+        p = parent
+
+# ---------------------------------------------------------------- status
+def login_state(acc):
+    """Existence checks only - never opens credential files."""
+    d = acc["config_dir"]
+    if os.path.exists(os.path.join(d, ".credentials.json")):
+        return "logged-in"
+    if SYSTEM == "Darwin" and os.path.exists(os.path.join(d, ".claude.json")):
+        return "keychain?"   # macOS keeps the token in the Keychain; run `ca status --deep`
+    return "not-logged-in"
+
+def docker_login_state(acc):
+    return "logged-in" if os.path.exists(os.path.join(acc["docker_config_dir"], ".credentials.json")) else "not-logged-in"
+
+def deep_status(acc):
+    """Ask the official CLI (local check, prints email/plan, never the token)."""
+    try:
+        r = subprocess.run(["claude", "auth", "status", "--text"], env=claude_env(acc),
+                           capture_output=True, text=True, timeout=30)
+        return (r.stdout or r.stderr).strip().splitlines()[0] if (r.stdout or r.stderr) else f"exit {r.returncode}"
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return f"error: {e}"
+
+# ---------------------------------------------------------------- commands
+def claude_env(acc, base=None):
+    env = dict(base if base is not None else os.environ)
+    env["CLAUDE_CONFIG_DIR"] = acc["config_dir"]
+    env.pop("ANTHROPIC_API_KEY", None)  # don't let a global key override the subscription login
+    return env
+
+def claude_argv(worktree=None, extra=()):
+    argv = ["claude"]
+    if worktree is not None:
+        argv += ["--worktree"] + ([worktree] if worktree else [])
+    return argv + list(extra)
+
+def q(s):
+    return subprocess.list2cmdline([s]) if SYSTEM == "Windows" else shlex.quote(s)
+
+def terminal_cmd(repo, acc, worktree=None, extra=()):
+    argv = " ".join(q(a) for a in claude_argv(worktree, extra))
+    if SYSTEM == "Windows":
+        return f'cd /d {q(repo)} && set "CLAUDE_CONFIG_DIR={acc["config_dir"]}" && set "ANTHROPIC_API_KEY=" && {argv}'
+    return f"cd {q(repo)} && env -u ANTHROPIC_API_KEY CLAUDE_CONFIG_DIR={q(acc['config_dir'])} {argv}"
+
+def login_cmd(acc):
+    if SYSTEM == "Windows":
+        return f'set "CLAUDE_CONFIG_DIR={acc["config_dir"]}" && claude auth login'
+    return f"CLAUDE_CONFIG_DIR={q(acc['config_dir'])} claude auth login"
+
+def desktop_cmd(acc, system=SYSTEM):
+    ud, cd = acc["desktop_user_data_dir"], acc["config_dir"]
+    if system == "Darwin":
+        # -n = new instance; --env needs macOS 13+ (only matters if Desktop honours CLAUDE_CONFIG_DIR)
+        return f'open -n -a "Claude" --env CLAUDE_CONFIG_DIR={shlex.quote(cd)} --args --user-data-dir={shlex.quote(ud)}'
+    if system == "Windows":
+        return (f'set "CLAUDE_CONFIG_DIR={cd}" && start "" "%LOCALAPPDATA%\\AnthropicClaude\\claude.exe" '
+                f'--user-data-dir="{ud}"')
+    return f"# No official Claude Desktop for Linux; use terminal/docker mode.\n# Unofficial builds: CLAUDE_CONFIG_DIR={shlex.quote(cd)} claude-desktop --user-data-dir={shlex.quote(ud)}"
+
+def docker_cmds(repo, acc, engine="docker", worktree=None, extra=()):
+    ctx = os.path.join(BASE_DIR, "docker")
+    inner = " ".join(shlex.quote(a) for a in claude_argv(worktree, extra))
+    name = "ca-" + hashlib.sha1(repo.encode()).hexdigest()[:8]
+    vol = f"{acc['docker_config_dir']}:/home/node/.claude"
+    build = f"{engine} build -t {IMAGE} {shlex.quote(ctx)}"
+    if engine == "container":   # Apple `container` CLI (macOS 26, Apple silicon) - untested here
+        run = (f"container run --rm -it --name {name} -v {shlex.quote(vol)} -v {shlex.quote(repo + ':/workspace')} "
+               f"-w /workspace -e CLAUDE_CONFIG_DIR=/home/node/.claude {IMAGE} {inner}")
+    else:
+        run = (f"docker run --rm -it --name {name} -v {shlex.quote(vol)} -v {shlex.quote(repo + ':/workspace')} "
+               f"-w /workspace -e CLAUDE_CONFIG_DIR=/home/node/.claude {IMAGE} {inner}")
+    return ctx, build, run
+
+def write_dockerfile():
+    ctx = os.path.join(BASE_DIR, "docker"); os.makedirs(ctx, exist_ok=True)
+    with open(os.path.join(ctx, "Dockerfile"), "w") as f:
+        f.write(DOCKERFILE)
+    return ctx
+
+def open_terminal(command):
+    """Open a new terminal window running `command`. Returns (ok, message)."""
+    if SYSTEM == "Darwin":
+        script = f'tell application "Terminal" to do script {json.dumps(command)}\ntell application "Terminal" to activate'
+        subprocess.Popen(["osascript", "-e", script]); return True, "opened Terminal.app"
+    if SYSTEM == "Windows":
+        subprocess.Popen(f'start "claude" cmd /k "{command}"', shell=True); return True, "opened cmd"
+    for term, pre in (("x-terminal-emulator", ["-e"]), ("gnome-terminal", ["--"]), ("konsole", ["-e"]),
+                      ("kitty", []), ("alacritty", ["-e"]), ("xterm", ["-e"])):
+        if shutil.which(term):
+            subprocess.Popen([term, *pre, "bash", "-lc", command + "; exec bash"]); return True, f"opened {term}"
+    return False, "no terminal emulator found; copy the command instead"
+
+def shell_hook(kind, repo=None, cfg=None):
+    me = os.path.realpath(__file__)
+    if kind == "direnv":
+        cfg = cfg or load()
+        r, b = find_repo(cfg, repo)
+        if not b:
+            raise SystemExit("repo not bound; run: ca bind <repo> <account>")
+        return f"export CLAUDE_CONFIG_DIR={q(cfg['accounts'][b['account']]['config_dir'])}"
+    fn = f"""_ca_hook() {{ eval "$({shlex.quote(sys.executable)} {shlex.quote(me)} env --shell)"; }}"""
+    if kind == "zsh":
+        return fn + "\nautoload -U add-zsh-hook; add-zsh-hook chpwd _ca_hook; _ca_hook"
+    if kind == "bash":
+        return fn + '\nPROMPT_COMMAND="_ca_hook${PROMPT_COMMAND:+;$PROMPT_COMMAND}"'
+    raise SystemExit("kind must be direnv|zsh|bash")
+
+def env_shell(cfg, path=None):
+    r, b = find_repo(cfg, path)
+    if b and b["account"] in cfg["accounts"]:
+        return f"export CLAUDE_CONFIG_DIR={q(cfg['accounts'][b['account']]['config_dir'])}; export CA_ACCOUNT={q(b['account'])}"
+    return "unset CLAUDE_CONFIG_DIR CA_ACCOUNT"
+
+def rows(cfg):
+    out = []
+    for path, b in sorted(cfg["repos"].items()):
+        acc = cfg["accounts"].get(b["account"])
+        out.append({"repo": path, "account": b["account"], "mode": b.get("mode", "terminal"),
+                    "exists": os.path.isdir(path),
+                    "login": (docker_login_state(acc) if b.get("mode") == "docker" else login_state(acc)) if acc else "missing-account",
+                    "command": command_for(path, b, cfg) if acc else ""})
+    return out
+
+def command_for(repo, b, cfg):
+    acc = cfg["accounts"][b["account"]]
+    mode = b.get("mode", "terminal")
+    if mode == "docker":
+        return docker_cmds(repo, acc)[2]
+    if mode == "desktop":
+        return desktop_cmd(acc)
+    return terminal_cmd(repo, acc)
+
+# ---------------------------------------------------------------- web UI
+PAGE = r"""<!doctype html><html><head><meta charset="utf-8"><title>Claude accounts</title>
+<style>
+body{font:14px system-ui,sans-serif;margin:24px;background:#f6f6f4;color:#222}
+h1{font-size:20px;margin:0 0 4px} h2{font-size:15px;margin:22px 0 8px}
+table{border-collapse:collapse;width:100%;background:#fff;box-shadow:0 1px 3px #0002;border-radius:6px;overflow:hidden}
+th,td{padding:8px 10px;border-bottom:1px solid #eee;text-align:left;vertical-align:middle}
+th{background:#fafafa;font-weight:600;font-size:12px;text-transform:uppercase;color:#666}
+code{font-size:12px;color:#555;word-break:break-all}
+.pill{display:inline-block;padding:2px 8px;border-radius:10px;font-size:12px;font-weight:600}
+.ok{background:#dcf5e3;color:#126b2f}.no{background:#fde2e1;color:#9b1c1c}.maybe{background:#fff3cd;color:#7a5b00}
+.acct{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:6px;vertical-align:middle}
+button{font:inherit;font-size:12px;padding:4px 8px;margin:1px;border:1px solid #bbb;border-radius:4px;background:#fff;cursor:pointer}
+button:hover{background:#eef}
+input,select{font:inherit;padding:3px 6px}
+#msg{margin-top:12px;padding:8px;background:#222;color:#cfc;font:12px monospace;white-space:pre-wrap;border-radius:4px;min-height:1em}
+.muted{color:#888;font-size:12px}
+</style></head><body>
+<h1>Claude Code &mdash; one account per repo</h1>
+<div class="muted">Local only (127.0.0.1). Login state = credentials file exists (contents never read).</div>
+<h2>Accounts</h2>
+<table id="acc"><thead><tr><th>Account</th><th>CLI config dir</th><th>CLI login</th><th>Container login</th><th>Actions</th></tr></thead><tbody></tbody></table>
+<p><input id="newacc" placeholder="new account name"> <button onclick="addAcc()">Add account</button></p>
+<h2>Repositories</h2>
+<table id="rep"><thead><tr><th>Repo</th><th>Account</th><th>Mode</th><th>Login</th><th>Actions</th></tr></thead><tbody></tbody></table>
+<p><input id="newrepo" size="50" placeholder="/path/to/repo"> <button onclick="bindNew()">Bind to first account</button></p>
+<div id="msg"></div>
+<script>
+const T=new URLSearchParams(location.search).get('token');
+const COLORS=['#e4572e','#29335c','#f3a712','#669bbc','#a8c686','#8e44ad','#16a085'];
+let S={};
+const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const pill=s=>`<span class="pill ${s=='logged-in'?'ok':s=='keychain?'?'maybe':'no'}">${esc(s)}</span>`;
+const color=n=>COLORS[Object.keys(S.accounts).sort().indexOf(n)%COLORS.length];
+async function api(path,body){const r=await fetch(path,{method:body?'POST':'GET',headers:{'X-CA-Token':T,'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined});const j=await r.json();if(!r.ok)throw new Error(j.error||r.status);return j}
+function msg(t){document.getElementById('msg').textContent=t}
+async function copy(t){try{await navigator.clipboard.writeText(t);msg('Copied:\n'+t)}catch(e){msg('Copy manually:\n'+t)}}
+async function act(a,o){try{const j=await api('/api/action',Object.assign({action:a},o));if(j.command&&!j.ok)copy(j.command);msg((j.message||'')+(j.command?'\n'+j.command:''));load()}catch(e){msg('Error: '+e.message)}}
+async function load(){S=await api('/api/state');
+ document.querySelector('#acc tbody').innerHTML=Object.entries(S.accounts).sort().map(([n,a])=>`<tr><td><span class="acct" style="background:${color(n)}"></span><b>${esc(n)}</b></td><td><code>${esc(a.config_dir)}</code></td><td>${pill(a.login)}</td><td>${pill(a.docker_login)}</td>
+ <td><button onclick='act("login",{account:${JSON.stringify(n)}})'>Login</button><button onclick='act("desktop",{account:${JSON.stringify(n)}})'>Open Desktop instance</button><button onclick='copy(${JSON.stringify(a.desktop_cmd)})'>Copy Desktop cmd</button></td></tr>`).join('');
+ const opts=sel=>Object.keys(S.accounts).sort().map(n=>`<option ${n==sel?'selected':''}>${esc(n)}</option>`).join('');
+ const modes=sel=>['terminal','docker','desktop'].map(m=>`<option ${m==sel?'selected':''}>${m}</option>`).join('');
+ document.querySelector('#rep tbody').innerHTML=S.repos.map(r=>{const R=JSON.stringify(r.repo);return `<tr><td><b>${esc(r.repo.split(/[\\/]/).pop())}</b><br><code>${esc(r.repo)}</code>${r.exists?'':' <span class="pill no">missing</span>'}</td>
+ <td><span class="acct" style="background:${color(r.account)}"></span><select onchange='bindR(${R},this.value,null)'>${opts(r.account)}</select></td>
+ <td><select onchange='bindR(${R},null,this.value)'>${modes(r.mode)}</select></td><td>${pill(r.login)}</td>
+ <td><button onclick='act("terminal",{repo:${R}})'>Open in terminal</button><button onclick='act("desktop",{account:${JSON.stringify(r.account)}})'>Open Desktop instance</button><button onclick='copy(${JSON.stringify(r.command)})'>Copy command</button><button onclick='act("login",{account:${JSON.stringify(r.account)}})'>Login</button></td></tr>`}).join('');}
+async function bindR(repo,account,mode){const r=S.repos.find(x=>x.repo==repo);try{await api('/api/bind',{repo,account:account||r.account,mode:mode||r.mode});msg('Bound '+repo);load()}catch(e){msg('Error: '+e.message)}}
+async function addAcc(){try{await api('/api/add-account',{name:document.getElementById('newacc').value.trim()});load()}catch(e){msg('Error: '+e.message)}}
+async function bindNew(){const a=Object.keys(S.accounts).sort()[0];if(!a)return msg('Add an account first');try{await api('/api/bind',{repo:document.getElementById('newrepo').value.trim(),account:a,mode:'terminal'});load()}catch(e){msg('Error: '+e.message)}}
+load().catch(e=>msg('Error: '+e.message));
+</script></body></html>"""
+
+def state():
+    cfg = load()
+    accs = {n: {"config_dir": a["config_dir"], "login": login_state(a), "docker_login": docker_login_state(a),
+                "desktop_cmd": desktop_cmd(a)} for n, a in cfg["accounts"].items()}
+    return {"accounts": accs, "repos": rows(cfg)}
+
+def make_handler(token, port, launch=True):
+    allowed_hosts = {f"127.0.0.1:{port}", f"localhost:{port}"}
+    class H(BaseHTTPRequestHandler):
+        def log_message(self, *a): pass   # no request logging (URL contains the token)
+        def _send(self, code, body, ctype="application/json"):
+            data = body.encode() if isinstance(body, str) else json.dumps(body).encode()
+            self.send_response(code); self.send_header("Content-Type", ctype)
+            self.send_header("Cache-Control", "no-store"); self.send_header("X-Frame-Options", "DENY")
+            self.send_header("Content-Security-Policy", "default-src 'self' 'unsafe-inline'; connect-src 'self'")
+            self.end_headers(); self.wfile.write(data)
+        def _authed(self, qtoken=None):
+            if self.headers.get("Host") not in allowed_hosts:   # DNS-rebinding guard
+                return False
+            t = qtoken if qtoken is not None else self.headers.get("X-CA-Token", "")
+            return hmac.compare_digest(t or "", token)
+        def do_GET(self):
+            u = urlparse(self.path)
+            if u.path == "/":
+                if not self._authed(parse_qs(u.query).get("token", [""])[0]):
+                    return self._send(403, "forbidden", "text/plain")
+                return self._send(200, PAGE, "text/html; charset=utf-8")
+            if u.path == "/api/state":
+                if not self._authed(): return self._send(403, {"error": "forbidden"})
+                return self._send(200, state())
+            self._send(404, {"error": "not found"})
+        def do_POST(self):
+            if not self._authed(): return self._send(403, {"error": "forbidden"})
+            try:
+                body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0)) or 0) or b"{}")
+                return self._send(200, self.post(urlparse(self.path).path, body))
+            except SystemExit as e:
+                return self._send(400, {"error": str(e)})
+            except Exception as e:
+                return self._send(400, {"error": f"{type(e).__name__}: {e}"})
+        def post(self, path, b):
+            cfg = load()
+            if path == "/api/bind":
+                p = bind(cfg, b["repo"], b["account"], b.get("mode", "terminal")); save(cfg); return {"ok": True, "repo": p}
+            if path == "/api/add-account":
+                add_account(cfg, b["name"]); save(cfg); return {"ok": True}
+            if path != "/api/action":
+                raise SystemExit("unknown endpoint")
+            a = b.get("action")
+            if a == "terminal":
+                repo, bd = find_repo(cfg, b["repo"])
+                if not bd: raise SystemExit("repo not bound")
+                cmd = command_for(repo, bd, cfg)
+                if bd.get("mode") == "desktop":
+                    cmd = terminal_cmd(repo, cfg["accounts"][bd["account"]])
+                ok, m = open_terminal(cmd) if launch else (False, "launch disabled")
+                return {"ok": ok, "message": m, "command": cmd}
+            acc = cfg["accounts"].get(b.get("account"))
+            if not acc: raise SystemExit("unknown account")
+            if a == "login":
+                cmd = login_cmd(acc); ok, m = open_terminal(cmd) if launch else (False, "launch disabled")
+                return {"ok": ok, "message": m + " - complete the browser sign-in there", "command": cmd}
+            if a == "desktop":
+                cmd = desktop_cmd(acc)
+                if launch and SYSTEM in ("Darwin", "Windows"):
+                    subprocess.Popen(cmd, shell=True); return {"ok": True, "message": "Desktop instance launched", "command": cmd}
+                return {"ok": False, "message": "Desktop launch only on macOS/Windows; command:", "command": cmd}
+            raise SystemExit("unknown action")
+    return H
+
+def serve(port=0, launch=True, open_browser=True):
+    token = secrets.token_urlsafe(24)
+    srv = ThreadingHTTPServer(("127.0.0.1", port), None)
+    port = srv.server_address[1]
+    srv.RequestHandlerClass = make_handler(token, port, launch)
+    url = f"http://127.0.0.1:{port}/?token={token}"
+    print(f"ca UI: {url}\n(Ctrl+C to stop)", flush=True)
+    if open_browser and os.environ.get("CA_NO_BROWSER") != "1":
+        import webbrowser; webbrowser.open(url)
+    try: srv.serve_forever()
+    except KeyboardInterrupt: pass
+
+# ---------------------------------------------------------------- CLI
+def main(argv=None):
+    ap = argparse.ArgumentParser(prog="ca", description=__doc__.splitlines()[0])
+    sp = ap.add_subparsers(dest="cmd", required=True)
+    p = sp.add_parser("add-account"); p.add_argument("name"); p.add_argument("--config-dir"); p.add_argument("--desktop-dir"); p.add_argument("--docker-dir")
+    p = sp.add_parser("bind"); p.add_argument("repo"); p.add_argument("account"); p.add_argument("--mode", default="terminal", choices=MODES)
+    p = sp.add_parser("unbind"); p.add_argument("repo")
+    sp.add_parser("list")
+    p = sp.add_parser("status"); p.add_argument("--deep", action="store_true", help="also ask `claude auth status` (local, prints no secrets)")
+    p = sp.add_parser("run"); p.add_argument("repo", nargs="?"); p.add_argument("--worktree", "-w", nargs="?", const="")
+    p.add_argument("--print", action="store_true", help="print command instead of running")
+    p = sp.add_parser("login"); p.add_argument("account"); p.add_argument("--print", action="store_true")
+    p = sp.add_parser("desktop"); p.add_argument("account"); p.add_argument("--launch", action="store_true")
+    p.add_argument("--os", choices=["Darwin", "Windows", "Linux"], default=SYSTEM)
+    p = sp.add_parser("shell-hook"); p.add_argument("kind", choices=["direnv", "zsh", "bash"]); p.add_argument("repo", nargs="?")
+    p.add_argument("--write", action="store_true", help="direnv: append to <repo>/.envrc")
+    p = sp.add_parser("env"); p.add_argument("path", nargs="?"); p.add_argument("--shell", action="store_true")
+    p = sp.add_parser("docker-run"); p.add_argument("repo", nargs="?"); p.add_argument("--engine", choices=["docker", "container"], default="docker")
+    p.add_argument("--build", action="store_true"); p.add_argument("--print", action="store_true"); p.add_argument("--worktree", "-w", nargs="?", const=None)
+    p = sp.add_parser("ui"); p.add_argument("--port", type=int, default=0); p.add_argument("--no-launch", action="store_true", help="never spawn terminals/apps")
+    argv = list(sys.argv[1:] if argv is None else argv)
+    extra = argv[argv.index("--") + 1:] if "--" in argv else []   # args after -- go to claude
+    argv = argv[:argv.index("--")] if "--" in argv else argv
+    a = ap.parse_args(argv)
+    cfg = load()
+
+    if a.cmd == "add-account":
+        acc = add_account(cfg, a.name, a.config_dir, a.desktop_dir, a.docker_dir); save(cfg)
+        print(json.dumps({a.name: acc}, indent=2)); print(f"next: ca login {a.name}")
+    elif a.cmd == "bind":
+        p = bind(cfg, a.repo, a.account, a.mode); save(cfg); print(f"{p} -> {a.account} ({a.mode})")
+    elif a.cmd == "unbind":
+        cfg["repos"].pop(norm(a.repo), None); save(cfg)
+    elif a.cmd in ("list", "status"):
+        print("ACCOUNTS"); 
+        for n, acc in sorted(cfg["accounts"].items()):
+            extra = f"  [{deep_status(acc)}]" if a.cmd == "status" and getattr(a, "deep", False) else ""
+            print(f"  {n:<14} cli={login_state(acc):<14} container={docker_login_state(acc):<14} {acc['config_dir']}{extra}")
+        print("REPOS")
+        for r in rows(cfg):
+            flag = "" if r["exists"] else "  (missing)"
+            print(f"  {r['repo']:<50} -> {r['account']:<14} {r['mode']:<9} {r['login'] if a.cmd=='status' else ''}{flag}")
+        if a.cmd == "status":
+            r, b = find_repo(cfg)
+            print(f"CWD: {'bound to ' + b['account'] + ' via ' + r if b else 'not bound'}")
+    elif a.cmd == "run":
+        repo, b = find_repo(cfg, a.repo)
+        if not b: raise SystemExit("repo not bound; run: ca bind <repo> <account>")
+        acc = cfg["accounts"][b["account"]]
+        if b.get("mode") == "docker":
+            return main(["docker-run", repo] + (["--print"] if a.print else []) + (["-w", a.worktree] if a.worktree else []))
+        argv = claude_argv(a.worktree, extra)
+        if a.print:
+            print(terminal_cmd(repo, acc, a.worktree, extra)); return 0
+        print(f"[ca] {os.path.basename(repo)} -> account '{b['account']}'", file=sys.stderr)
+        os.chdir(repo)
+        exe = shutil.which("claude") or "claude"
+        if SYSTEM == "Windows":
+            return subprocess.call([exe] + argv[1:], env=claude_env(acc))
+        os.execvpe(exe, argv, claude_env(acc))
+    elif a.cmd == "login":
+        acc = cfg["accounts"].get(a.account) or sys.exit(f"unknown account {a.account}")
+        if a.print: print(login_cmd(acc)); return 0
+        print(f"[ca] signing in account '{a.account}' (config dir {acc['config_dir']})", file=sys.stderr)
+        return subprocess.call(["claude", "auth", "login"], env=claude_env(acc))
+    elif a.cmd == "desktop":
+        acc = cfg["accounts"].get(a.account) or sys.exit(f"unknown account {a.account}")
+        cmd = desktop_cmd(acc, a.os); print(cmd)
+        if a.launch and a.os == SYSTEM and SYSTEM in ("Darwin", "Windows"):
+            subprocess.Popen(cmd, shell=True)
+    elif a.cmd == "shell-hook":
+        out = shell_hook(a.kind, a.repo, cfg)
+        if a.kind == "direnv" and a.write:
+            r, _ = find_repo(cfg, a.repo)
+            with open(os.path.join(r, ".envrc"), "a") as f: f.write(out + "\n")
+            print(f"appended to {r}/.envrc; run: direnv allow {r}")
+        else:
+            print(out)
+    elif a.cmd == "env":
+        if a.shell: print(env_shell(cfg, a.path))
+        else:
+            r, b = find_repo(cfg, a.path)
+            print(f"CLAUDE_CONFIG_DIR={cfg['accounts'][b['account']]['config_dir']}" if b else "not bound")
+    elif a.cmd == "docker-run":
+        repo, b = find_repo(cfg, a.repo)
+        if not b: raise SystemExit("repo not bound")
+        acc = cfg["accounts"][b["account"]]
+        ctx = write_dockerfile()
+        _, build, run = docker_cmds(repo, acc, a.engine, a.worktree)
+        _, cbuild, crun = docker_cmds(repo, acc, "container" if a.engine == "docker" else "docker", a.worktree)
+        print(f"# Dockerfile: {ctx}/Dockerfile\n# build: {build}\n# run:   {run}\n# alt ({'Apple container' if a.engine=='docker' else 'docker'}):\n#   {cbuild}\n#   {crun}")
+        print("# first run: type /login inside the container (login stored in", acc["docker_config_dir"] + ")")
+        if a.print: return 0
+        if not shutil.which(a.engine): raise SystemExit(f"{a.engine} not found; commands printed above")
+        if a.build or subprocess.run([a.engine, "image", "inspect", IMAGE], capture_output=True).returncode != 0:
+            subprocess.check_call(shlex.split(build))
+        return subprocess.call(shlex.split(run))
+    elif a.cmd == "ui":
+        serve(a.port, launch=not a.no_launch)
+    return 0
+
+if __name__ == "__main__":
+    sys.exit(main() or 0)

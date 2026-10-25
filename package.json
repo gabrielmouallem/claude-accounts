@@ -1,0 +1,155 @@
+{
+  "name": "claude-accounts",
+  "version": "1.0.0",
+  "description": "Bind each git repository to its own Claude Code account (isolated CLAUDE_CONFIG_DIR, Claude Desktop --user-data-dir, or Docker). Desktop app + ca CLI.",
+  "productName": "Claude Accounts",
+  "private": true,
+  "main": "src/main.js",
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test test/*.test.js",
+    "icons": "node scripts/make-icons.js",
+    "shots": "node scripts/screenshots.js",
+    "dist:mac": "electron-builder --mac --arm64 --x64",
+    "dist:win": "electron-builder --win --x64",
+    "dist": "electron-builder --mac --win",
+    "sync-ca": "node -e \"require('fs').copyFileSync('cli/ca','resources/ca')\""
+  },
+  "keywords": [
+    "claude",
+    "claude-code",
+    "anthropic",
+    "accounts",
+    "electron",
+    "cli",
+    "developer-tools"
+  ],
+  "author": "Gabriel Mouallem",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/gabrielmouallem/claude-accounts.git"
+  },
+  "homepage": "https://github.com/gabrielmouallem/claude-accounts#readme",
+  "bugs": {
+    "url": "https://github.com/gabrielmouallem/claude-accounts/issues"
+  },
+  "type": "commonjs",
+  "devDependencies": {
+    "@fontsource-variable/inter": "^5.3.0",
+    "electron": "^45.0.0",
+    "electron-builder": "^26.18.0",
+    "playwright-core": "^1.64.1",
+    "sharp": "^0.35.5"
+  },
+  "build": {
+    "appId": "dev.gabriel.claude-accounts",
+    "productName": "Claude Accounts",
+    "copyright": "© 2026 Gabriel Mouallem",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "src/**/*",
+      "build/icon.png",
+      "build/tray.png",
+      "build/trayTemplate.png",
+      "build/trayTemplate@2x.png",
+      "package.json",
+      "!**/*.map",
+      "!**/*.md"
+    ],
+    "extraResources": [
+      {
+        "from": "resources/ca",
+        "to": "ca"
+      }
+    ],
+    "asar": true,
+    "electronLanguages": [
+      "en",
+      "pt-BR"
+    ],
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        }
+      ],
+      "category": "public.app-category.developer-tools",
+      "icon": "build/icon.icns",
+      "identity": null,
+      "hardenedRuntime": false,
+      "gatekeeperAssess": false,
+      "darkModeSupport": true,
+      "minimumSystemVersion": "12.0",
+      "extendInfo": {
+        "NSAppleEventsUsageDescription": "Claude Accounts opens Terminal or iTerm to run claude for the repository you choose.",
+        "LSApplicationCategoryType": "public.app-category.developer-tools"
+      },
+      "artifactName": "ClaudeAccounts-${version}-mac-${arch}.${ext}"
+    },
+    "dmg": {
+      "title": "Claude Accounts",
+      "artifactName": "ClaudeAccounts-${version}-mac-${arch}.${ext}",
+      "contents": [
+        {
+          "x": 150,
+          "y": 190
+        },
+        {
+          "x": 390,
+          "y": 190,
+          "type": "link",
+          "path": "/Applications"
+        }
+      ],
+      "window": {
+        "width": 540,
+        "height": 380
+      }
+    },
+    "win": {
+      "target": [
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icon.ico",
+      "signAndEditExecutable": false,
+      "artifactName": "ClaudeAccounts-${version}-win-${arch}.${ext}"
+    },
+    "portable": {
+      "artifactName": "ClaudeAccounts-${version}-win-${arch}-portable.${ext}"
+    },
+    "linux": {
+      "target": [
+        "AppImage"
+      ],
+      "icon": "build/icons",
+      "category": "Development"
+    },
+    "compression": "maximum"
+  }
+}
