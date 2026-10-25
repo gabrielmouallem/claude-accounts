@@ -44,13 +44,9 @@ function icon(name, size = 16, cls = '') {
   t.innerHTML = `<svg class="icon ${cls}" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name] || ''}</svg>`;
   return t.content.firstChild;
 }
-// App mark: two overlapping circles (original, not any vendor logo).
+// App mark: the app icon's artwork (mark.svg, drawn by scripts/make-icons.js). Decorative: it always sits next to the name.
 function logoMark(size = 28) {
-  const t = document.createElement('template');
-  t.innerHTML = `<svg class="logo" width="${size}" height="${size}" viewBox="0 0 64 64" aria-hidden="true">
-  <defs><clipPath id="lg-clip"><circle cx="38.5" cy="32" r="12.5"/></clipPath></defs>
-  <rect x=".5" y=".5" width="63" height="63" rx="14.5" fill="#0a0a0a" stroke="#2e2e2e"/>
-  <circle cx="25.5" cy="32" r="12.5" fill="#bef264" clip-path="url(#lg-clip)"/>
-  <g fill="none" stroke="#ededed" stroke-width="3"><circle cx="25.5" cy="32" r="12.5"/><circle cx="38.5" cy="32" r="12.5"/></g></svg>`;
-  return t.content.firstChild;
+  const img = document.createElement('img');
+  Object.assign(img, { className: 'logo', src: 'mark.svg', width: size, height: size, alt: '', draggable: false });
+  return img;
 }

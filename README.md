@@ -328,7 +328,7 @@ python3 -m unittest discover -s cli -p 'test_*.py' -v   # CLI tests (throwaway c
 | `npm run dist:mac` | Unsigned macOS build, arm64 + x64, `.dmg` + `.zip` (`.dmg` needs macOS) |
 | `npm run dist:win` | Unsigned Windows build, portable `.exe` + `.zip` |
 | `npm run dist` | Both of the above |
-| `npm run icons` | Regenerate `build/icon.{png,icns,ico}` from `build/icon.svg` |
+| `npm run icons` | Draw the icon from `scripts/icon-art.js` into `build/` (`.svg`, `.png`, `.icns`, `.ico`) and the in-app mark |
 | `npm run shots` | Regenerate `docs/screenshots` from fake demo data (needs a display, e.g. Xvfb) |
 | `npm run sync-ca` | Copy `cli/ca` into `resources/ca` (the copy bundled with the app) |
 

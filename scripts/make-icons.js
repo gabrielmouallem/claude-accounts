@@ -1,6 +1,10 @@
-// Renders build/icon.svg into PNG sizes, a macOS .icns and a Windows .ico (pure Node + sharp).
+// Draws the icon from scripts/icon-art.js into build/icon.svg and the in-app mark (src/renderer/mark.svg),
+// then renders PNG sizes, a macOS .icns and a Windows .ico (pure Node + sharp).
 const sharp = require('sharp'); const fs = require('fs'); const path = require('path');
+const { icon, DARK } = require('./icon-art');
 const B = path.join(__dirname, '..', 'build');
+fs.writeFileSync(path.join(B, 'icon.svg'), icon(DARK));
+fs.writeFileSync(path.join(__dirname, '..', 'src', 'renderer', 'mark.svg'), icon({ ...DARK, shadow: false, crop: true }));
 const svg = fs.readFileSync(path.join(B, 'icon.svg'));
 const png = s => sharp(svg, { density: Math.max(72, 72 * s / 1024 * 4) }).resize(s, s).png().toBuffer();
 (async () => {
