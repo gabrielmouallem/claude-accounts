@@ -10,6 +10,7 @@
     "test": "node --test test/*.test.js",
     "icons": "node scripts/make-icons.js",
     "shots": "node scripts/screenshots.js",
+    "sandbox": "node scripts/sandbox.js",
     "dist:mac": "electron-builder --mac --arm64 --x64",
     "dist:win": "electron-builder --win --x64",
     "dist": "electron-builder --mac --win"

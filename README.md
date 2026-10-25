@@ -334,9 +334,11 @@ python3 -m unittest discover -s cli -p 'test_*.py' -v   # CLI tests (throwaway c
 | `npm run dist:win` | Unsigned Windows build, portable `.exe` + `.zip` |
 | `npm run dist` | Both of the above |
 | `npm run icons` | Draw the icon from `scripts/icon-art.js` into `build/` (`.svg`, `.png`, `.icns`, `.ico`) and the in-app mark |
-| `npm run shots` | Regenerate `docs/screenshots` from fake demo data (needs a display, e.g. Xvfb) |
+| `npm run sandbox` | Run the app on fake demo accounts in a throwaway home, launching disabled (`-- --empty` for the first run) |
+| `npm run shots` | Regenerate `docs/screenshots` from fake demo data (macOS, or Linux under Xvfb) |
 
 Set `CA_NO_LAUNCH=1` to run the app in a safe demo mode that copies commands instead of launching anything.
+`npm run sandbox` sets it for you.
 
 **Layout**
 
@@ -348,7 +350,9 @@ src/preload.js      The small API exposed to the renderer
 src/renderer/       The UI: vanilla JS, no framework, bundled Inter font and icons
 cli/ca              The Python CLI, bundled with the app as is; tests keep it in step with src/core.js
 test/               node:test suite (core logic + CLI compatibility)
-scripts/            Icon generation, screenshots, demo config
+scripts/            Icon art and generation, the sandbox launcher, screenshots, demo config
+AGENTS.md           Map and rules for contributors and coding agents (CLAUDE.md imports it)
+.claude/            Area rules, skills (/run-app, /release) and a security reviewer for Claude Code
 ```
 
 **CI and releases.** [`.github/workflows/build.yml`](.github/workflows/build.yml) runs both test suites
@@ -365,8 +369,13 @@ Issues and pull requests are welcome. For bugs, please include your OS, the app 
 `claude --version`. For larger changes, open an issue first so we can agree on the approach.
 
 Before sending a PR, run `npm test` and the CLI tests. A change to `cli/ca` or `src/core.js` usually
-needs the same change in the other; the parity tests say where they differ.
+needs the same change in the other; the parity tests say where they differ. To try a change, run
+`npm run sandbox`: the app opens on fake demo accounts and leaves your real config alone.
 Never include real config files, credentials or email addresses in an issue or PR.
+
+[AGENTS.md](AGENTS.md) holds the project map and the rules that never bend (credentials, network,
+shell strings, IPC). Coding agents read it, and it's a quick read for people too. Claude Code also
+loads the area rules in `.claude/rules/` and has `/run-app` to drive the app in that sandbox.
 
 ## Terms of use
 

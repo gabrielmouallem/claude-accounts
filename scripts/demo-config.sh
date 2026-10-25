@@ -3,7 +3,7 @@
 set -euo pipefail
 D=${1:-/tmp/ca-demo}; rm -rf "$D"; mkdir -p "$D/home/code"
 export HOME="$D/home" CA_CONFIG="$D/home/.config/claude-accounts/config.json"
-CA="python3 $(dirname "$0")/../resources/ca"
+CA="python3 $(dirname "$0")/../cli/ca"
 for r in acme-api acme-web design-system side-project weekend-ml; do mkdir -p "$HOME/code/$r"; git init -q "$HOME/code/$r"; done
 $CA add-account work >/dev/null; $CA add-account personal >/dev/null; $CA add-account client-x >/dev/null
 $CA bind "$HOME/code/acme-api" work >/dev/null; $CA bind "$HOME/code/acme-web" work --mode docker >/dev/null
