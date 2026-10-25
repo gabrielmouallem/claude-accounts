@@ -189,7 +189,7 @@ function repoMenu(r, anchor) {
     ['branch', 'Open in new worktree…', () => worktreeModal(r)],
     ['monitor', 'Launch Desktop instance', () => launch(() => api.desktop(r.account))],
     ['box', 'Run in Docker', () => launch(() => api.openDocker(r.repo, 'docker'))],
-    ['layers', 'Run in Apple container', () => launch(() => api.openDocker(r.repo, 'container'))],
+    IS_MAC ? ['layers', 'Run in Apple container', () => launch(() => api.openDocker(r.repo, 'container'))] : null,
     '-',
     ['copy', 'Copy command', () => copyCmd('open', { repo: r.repo }), `${SHIFT}${MOD}C`],
     ['code', 'Copy direnv line (.envrc)', () => copyCmd('direnv', { repo: r.repo }, 'direnv line')],
@@ -297,7 +297,7 @@ function renderOnboarding() {
     h('span', { class: 'n' }, i < o.step ? icon('check', 11) : i + 1), t, i < steps.length - 1 ? h('span', { class: 'bar' }) : null)));
   let body;
   if (o.step === 0) {
-    const inp = h('input', { class: 'input', placeholder: 'e.g. work', value: o.name || '', autofocus: true, onkeydown: e => e.key === 'Enter' && next() });
+    const inp = h('input', { class: 'input', placeholder: 'e.g. work', value: o.name || '', autofocus: true, oninput: e => { o.name = e.target.value; }, onkeydown: e => e.key === 'Enter' && next() });
     const err = h('div', { class: 'error-text' });
     const next = async () => {
       const name = inp.value.trim(); if (!name) { err.textContent = 'Give the account a short name.'; return; }
@@ -305,7 +305,7 @@ function renderOnboarding() {
     };
     body = h('div', { class: 'onb-body' }, h('h3', {}, 'Name your first account'),
       h('p', {}, 'Use one account per subscription, like your work and personal Claude logins. Each gets a private folder.'),
-      h('div', { class: 'field' }, inp, h('div', { class: 'suggest' }, ['work', 'personal', 'client'].map(s => h('button', { class: 'chipbtn', onclick: () => { inp.value = s; inp.focus(); } }, s))), err),
+      h('div', { class: 'field' }, inp, h('div', { class: 'suggest' }, ['work', 'personal', 'client'].map(s => h('button', { class: 'chipbtn', onclick: () => { inp.value = o.name = s; inp.focus(); } }, s))), err),
       h('div', { class: 'onb-actions' }, d.accounts.length ? h('button', { class: 'btn ghost', onclick: () => { o.step = 1; o.account = d.accounts[0].name; render(); } }, 'Use existing account')
         : h('button', { class: 'btn ghost', onclick: finishOnb }, 'Skip setup'),
       h('button', { class: 'btn primary', onclick: next }, 'Continue', icon('arrowRight', 14))));
@@ -408,7 +408,7 @@ function closeMenu() { if (menuEl) { menuEl.remove(); menuEl = null; document.qu
 function menu(anchor, items) {
   closeMenu();
   anchor.classList.add('open');
-  menuEl = h('div', { class: 'menu', role: 'menu' }, items.map(it => it === '-' ? h('hr') :
+  menuEl = h('div', { class: 'menu', role: 'menu' }, items.filter(Boolean).map(it => it === '-' ? h('hr') :
     h('button', { class: it[4] ? 'danger' : '', role: 'menuitem', onclick: () => { closeMenu(); it[2](); } }, icon(it[0], 14), it[1], it[3] ? h('span', { class: 'menu-kbd faint' }, it[3]) : null)));
   document.body.append(menuEl);
   const r = anchor.getBoundingClientRect(), m = menuEl.getBoundingClientRect();

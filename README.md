@@ -67,7 +67,7 @@ Each binding also picks **how** the session opens:
 | Mode | What it launches | Where that account's login lives | Needs |
 | --- | --- | --- | --- |
 | **Terminal** | The official `claude` CLI in a new Terminal / iTerm window (macOS), `cmd` (Windows) or your terminal emulator (Linux) | `accounts/<name>/claude` via `CLAUDE_CONFIG_DIR` (on macOS the token itself is kept in the Keychain) | `claude` on your login-shell `PATH` |
-| **Docker** | `claude` in a `node:20-slim` container, with the repo mounted at `/workspace` | `accounts/<name>/docker-claude`, mounted at `/home/node/.claude`. Run `/login` once inside. | Docker or Apple `container` |
+| **Docker** | `claude` in a `node:24-slim` container, with the repo mounted at `/workspace` | `accounts/<name>/docker-claude`, mounted at `/home/node/.claude`. Run `/login` once inside. | Docker or Apple `container` |
 | **Desktop** | A separate Claude Desktop instance with its own `--user-data-dir` | `accounts/<name>/desktop` | Claude Desktop (macOS / Windows) |
 
 Containers keep a login of their own because, on macOS, the host token lives in the Keychain and a
@@ -204,7 +204,6 @@ ca desktop <account> [--launch] [--os Darwin|Windows|Linux]
 ca docker-run [repo] [--engine docker|container] [--build] [--print]
 ca env [path] [--shell]             # what CLAUDE_CONFIG_DIR a path resolves to
 ca shell-hook zsh|bash|direnv [repo] [--write]
-ca ui [--port N] [--no-launch]      # small local web UI on 127.0.0.1 with a random per-run token
 ```
 
 Set `CA_CONFIG=/path/to/config.json` to use a different config file.
@@ -213,7 +212,8 @@ Set `CA_CONFIG=/path/to/config.json` to use a different config file.
 
 ### Make plain `claude` pick the right account
 
-Add a hook and `CLAUDE_CONFIG_DIR` follows you as you `cd`:
+Add a hook and `CLAUDE_CONFIG_DIR` follows you as you `cd`. If you set `CLAUDE_CONFIG_DIR` yourself,
+the hook puts your value back when you leave a bound repository.
 
 ```sh
 # zsh: add to ~/.zshrc (uses a chpwd hook)
@@ -241,8 +241,10 @@ ca shell-hook direnv ~/code/acme --write && direnv allow ~/code/acme
 - **Electron hardening.** `contextIsolation`, no `nodeIntegration`, a sandboxed renderer, a minimal
   preload, a strict CSP, sender checks and validation on every IPC call. Navigation, new windows and
   permission requests are denied.
-- **`ca ui`** listens on `127.0.0.1` only, needs a random per-run token, checks the `Host` header
-  against DNS rebinding, and doesn't log requests.
+- **No shell strings from your data.** Folder and account names reach processes as arguments, the
+  working directory or environment variables, never pasted into a command line. On Windows that keeps
+  a folder named `R&D` from being read as two commands.
+- **The CLI opens no ports** and, like the app, writes `config.json` with mode `0600`.
 
 Found a security issue? Please open a [private security advisory](https://github.com/gabrielmouallem/claude-accounts/security/advisories/new)
 instead of a public issue.
@@ -283,13 +285,16 @@ separate container login in `accounts/<name>/docker-claude`. Type `/login` insid
 
 Version 1.0. The core logic is covered by tests; real-world use on every platform is not yet.
 
-- **Verified:** 13 `node:test` tests and 12 `unittest` tests pass on Linux and on macOS (Apple
-  Silicon). They cover config handling and validation, lookup from subdirectories, environment
-  construction, a real `claude --version` under a per-account `CLAUDE_CONFIG_DIR`, `claude auth status`
-  isolation between accounts, the existence-only credential check, Docker / `container` / Desktop
-  command generation, the shell hooks, the web UI token and `Host` checks, IPC input validation, and
-  config compatibility between the app and the CLI. The UI was exercised and screenshotted under Xvfb.
-  The macOS bundle structure was inspected (Info.plist, icon, arm64/x64 Mach-O).
+- **Verified:** 20 `node:test` tests (plus 3 that run only on Windows) and 19 `unittest` tests pass
+  on macOS (Apple Silicon) and Linux, and CI runs them on Linux, macOS and Windows. They cover config
+  handling and validation, lookup from subdirectories, environment construction, a real
+  `claude --version` under a per-account `CLAUDE_CONFIG_DIR`, `claude auth status` isolation between
+  accounts, the existence-only credential check, Docker / `container` / Desktop command generation,
+  the shell hooks (including putting back your own `CLAUDE_CONFIG_DIR`), IPC input validation, and
+  config compatibility between the app and the CLI. The app and the CLI are checked to print the same
+  commands and to accept the same account names. On Windows, the tests run the real `cmd.exe` from a
+  folder named with `cmd` syntax and check that nothing in the name runs. The UI was exercised and
+  screenshotted under Xvfb. The macOS bundle structure was inspected (Info.plist, icon, arm64/x64 Mach-O).
 - **Not yet verified:** the packaged app on real macOS and Windows, which covers the Keychain badge,
   vibrancy, the tray, AppleScript terminal launch, Claude Desktop multi-instance (`--user-data-dir`,
   `open --env`) and launching on Windows. Real sign-ins weren't tested either. Docker and Apple `container`
@@ -330,7 +335,6 @@ python3 -m unittest discover -s cli -p 'test_*.py' -v   # CLI tests (throwaway c
 | `npm run dist` | Both of the above |
 | `npm run icons` | Draw the icon from `scripts/icon-art.js` into `build/` (`.svg`, `.png`, `.icns`, `.ico`) and the in-app mark |
 | `npm run shots` | Regenerate `docs/screenshots` from fake demo data (needs a display, e.g. Xvfb) |
-| `npm run sync-ca` | Copy `cli/ca` into `resources/ca` (the copy bundled with the app) |
 
 Set `CA_NO_LAUNCH=1` to run the app in a safe demo mode that copies commands instead of launching anything.
 
@@ -342,7 +346,7 @@ src/core.js         Config handling and command generation (a port of the CLI's 
 src/validate.js     Validation for every IPC payload
 src/preload.js      The small API exposed to the renderer
 src/renderer/       The UI: vanilla JS, no framework, bundled Inter font and icons
-cli/ca              The Python CLI. Source of truth; CI checks resources/ca matches it.
+cli/ca              The Python CLI, bundled with the app as is; tests keep it in step with src/core.js
 test/               node:test suite (core logic + CLI compatibility)
 scripts/            Icon generation, screenshots, demo config
 ```
@@ -360,7 +364,8 @@ using only the built-in `GITHUB_TOKEN`.
 Issues and pull requests are welcome. For bugs, please include your OS, the app or CLI version, and
 `claude --version`. For larger changes, open an issue first so we can agree on the approach.
 
-Before sending a PR, run `npm test` and the CLI tests. If you changed `cli/ca`, run `npm run sync-ca`.
+Before sending a PR, run `npm test` and the CLI tests. A change to `cli/ca` or `src/core.js` usually
+needs the same change in the other; the parity tests say where they differ.
 Never include real config files, credentials or email addresses in an issue or PR.
 
 ## Terms of use

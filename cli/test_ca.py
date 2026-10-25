@@ -1,6 +1,12 @@
 """Tests for ca. Run: python3 test_ca.py  (uses a throwaway config; no network, no login)."""
-import json, os, subprocess, sys, tempfile, threading, time, unittest, urllib.request, importlib.util, importlib.machinery, shutil
+import json, os, subprocess, sys, tempfile, unittest, importlib.util, importlib.machinery, shutil
 HERE = os.path.dirname(os.path.abspath(__file__))
+WIN = os.name == "nt"
+def read(p):
+    with open(p, encoding="utf-8") as f: return f.read()
+def write(p, text):
+    with open(p, "w", encoding="utf-8") as f: f.write(text)
+NAMES = json.loads(read(os.path.join(HERE, "..", "test", "fixtures", "account-names.json")))
 TMP = tempfile.mkdtemp(prefix="ca-test-")
 os.environ["CA_CONFIG"] = os.path.join(TMP, "cfg", "config.json")
 loader = importlib.machinery.SourceFileLoader("ca", os.path.join(HERE, "ca"))
@@ -22,11 +28,11 @@ class T(unittest.TestCase):
         assert sh("bind", cls.r2, "personal", "--mode", "docker").returncode == 0
 
     def test_config_shape(self):
-        cfg = json.load(open(os.environ["CA_CONFIG"]))
+        cfg = json.loads(read(os.environ["CA_CONFIG"]))
         self.assertEqual(set(cfg["accounts"]), {"work", "personal"})
         for a in cfg["accounts"].values():
             self.assertTrue({"config_dir", "desktop_user_data_dir", "docker_config_dir"} <= set(a))
-            self.assertEqual(os.stat(a["config_dir"]).st_mode & 0o777, 0o700)
+            if not WIN: self.assertEqual(os.stat(a["config_dir"]).st_mode & 0o777, 0o700)
         self.assertEqual(cfg["repos"][os.path.realpath(self.r1)], {"account": "work", "mode": "terminal"})
         self.assertEqual(cfg["repos"][os.path.realpath(self.r2)]["mode"], "docker")
 
@@ -67,11 +73,12 @@ class T(unittest.TestCase):
         line = ca.deep_status(ca.load()["accounts"]["work"])
         self.assertIn("Not logged in", line)
 
+    @unittest.skipIf(WIN, "POSIX file modes")
     def test_login_state_existence_only(self):
         acc = ca.load()["accounts"]["personal"]
         self.assertEqual(ca.login_state(acc), "not-logged-in")
         p = os.path.join(acc["config_dir"], ".credentials.json")
-        open(p, "w").write("FAKE")   # dummy file, never read by ca
+        write(p, "FAKE")             # dummy file, never read by ca
         os.chmod(p, 0)               # unreadable: proves ca only stats it
         try: self.assertEqual(ca.login_state(acc), "logged-in")
         finally: os.chmod(p, 0o600); os.remove(p)
@@ -83,7 +90,7 @@ class T(unittest.TestCase):
         self.assertIn(f"{acc['docker_config_dir']}:/home/node/.claude", out)
         self.assertIn(f"{os.path.realpath(self.r2)}:/workspace", out)
         self.assertIn("container run --rm -it", out)
-        df = open(os.path.join(os.path.dirname(os.environ["CA_CONFIG"]), "docker", "Dockerfile")).read()
+        df = read(os.path.join(os.path.dirname(os.environ["CA_CONFIG"]), "docker", "Dockerfile"))
         self.assertIn("npm i -g @anthropic-ai/claude-code", df)
         self.assertIn("docker run", sh("run", self.r2, "--print").stdout)  # run honours mode=docker
 
@@ -93,6 +100,7 @@ class T(unittest.TestCase):
         self.assertIn("claude.exe", sh("desktop", "work", "--os", "Windows").stdout)
         self.assertIn("No official", sh("desktop", "work", "--os", "Linux").stdout)
 
+    @unittest.skipIf(WIN, "the hooks are for zsh and bash")
     def test_shell_hooks(self):
         self.assertTrue(sh("shell-hook", "direnv", self.r1).stdout.startswith("export CLAUDE_CONFIG_DIR="))
         self.assertIn("add-zsh-hook chpwd", sh("shell-hook", "zsh").stdout)
@@ -102,33 +110,60 @@ class T(unittest.TestCase):
         out = subprocess.run(["bash", "-c", script], capture_output=True, text=True, env=os.environ).stdout
         self.assertIn("A=work", out); self.assertIn("B=personal", out); self.assertIn("C=none", out)
 
-    def test_web_ui(self):
-        port = 18765
-        p = subprocess.Popen(CA + ["ui", "--port", str(port), "--no-launch"], stdout=subprocess.PIPE, text=True,
-                             env=dict(os.environ, CA_NO_BROWSER="1"))
+    def test_account_names(self):
+        for n in NAMES["valid"]: self.assertTrue(ca.valid_account_name(n), n)
+        for n in NAMES["invalid"]: self.assertFalse(ca.valid_account_name(n), n)
+        r = sh("add-account", "WORK")   # folders ignore case on macOS and Windows: it would share the "work" login
+        self.assertNotEqual(r.returncode, 0); self.assertIn("'work' already exists", r.stderr)
+        self.assertNotEqual(sh("add-account", "../escape").returncode, 0)
+
+    @unittest.skipIf(WIN, "POSIX file modes")
+    def test_config_private(self):
+        tmp = os.environ["CA_CONFIG"] + ".tmp"
+        write(tmp, "stale"); os.chmod(tmp, 0o644)   # a leftover temp file keeps its mode under O_CREAT
+        ca.save(ca.load())
+        self.assertEqual(os.stat(os.environ["CA_CONFIG"]).st_mode & 0o777, 0o600)
+
+    def test_config_utf8(self):
+        r = os.path.join(TMP, "Área de Trabalho"); os.makedirs(r)
+        self.assertEqual(sh("bind", r, "work").returncode, 0)
+        raw = read(os.environ["CA_CONFIG"])
+        self.assertIn("Área de Trabalho", raw)   # written as text, like the app writes it
+        self.assertIn(os.path.realpath(r), ca.load()["repos"])
+        sh("unbind", r)
+
+    def test_missing_account(self):
+        cfg = ca.load(); r = os.path.realpath(self.r1)
+        cfg["repos"][r] = {"account": "gone", "mode": "terminal"}; ca.save(cfg)
         try:
-            url = p.stdout.readline().split()[-1]; token = url.split("token=")[1]
-            self.assertTrue(url.startswith(f"http://127.0.0.1:{port}/"))
-            self.assertIn("one account per repo", urllib.request.urlopen(url).read().decode())
-            for bad in (f"http://127.0.0.1:{port}/", f"http://127.0.0.1:{port}/?token=wrong"):
-                with self.assertRaises(urllib.error.HTTPError): urllib.request.urlopen(bad)
-            hdr = {"X-CA-Token": token, "Content-Type": "application/json"}
-            st = json.load(urllib.request.urlopen(urllib.request.Request(f"http://127.0.0.1:{port}/api/state", headers=hdr)))
-            self.assertEqual(len(st["repos"]), 2)
-            # rebind via API
-            req = urllib.request.Request(f"http://127.0.0.1:{port}/api/bind", headers=hdr, method="POST",
-                data=json.dumps({"repo": self.r1, "account": "personal", "mode": "terminal"}).encode())
-            self.assertTrue(json.load(urllib.request.urlopen(req))["ok"])
-            self.assertEqual(ca.load()["repos"][os.path.realpath(self.r1)]["account"], "personal")
-            req = urllib.request.Request(f"http://127.0.0.1:{port}/api/action", headers=hdr, method="POST",
-                data=json.dumps({"action": "terminal", "repo": self.r1}).encode())
-            self.assertIn("claude", json.load(urllib.request.urlopen(req))["command"])
-            # wrong Host header rejected (DNS rebinding)
-            with self.assertRaises(urllib.error.HTTPError):
-                urllib.request.urlopen(urllib.request.Request(f"http://127.0.0.1:{port}/api/state", headers=dict(hdr, Host="evil.com")))
+            out = sh("env", self.r1)
+            self.assertEqual(out.returncode, 1); self.assertIn("'gone' is not configured", out.stderr)
+            self.assertNotIn("Traceback", out.stderr)
+            self.assertEqual(sh("env", "--shell", self.r1).stdout, sh("env", "--shell", TMP).stdout)   # the hook never fails
+            self.assertNotIn("Traceback", sh("run", self.r1, "--print").stderr)
         finally:
-            subprocess.run(CA + ["bind", self.r1, "work"], env=os.environ)
-            p.terminate(); p.wait()
+            self.assertEqual(sh("bind", self.r1, "work").returncode, 0)
+
+    def test_docker_run_passes_claude_args(self):
+        self.assertIn(f"{ca.IMAGE} claude --version", sh("run", self.r2, "--print", "--", "--version").stdout)
+        self.assertIn(f"{ca.IMAGE} claude --worktree", sh("run", self.r2, "--print", "-w").stdout)
+        self.assertIn(f"{ca.IMAGE} claude --worktree feat-x --model opus",
+                      sh("docker-run", self.r2, "--print", "-w", "feat-x", "--", "--model", "opus").stdout)
+
+    @unittest.skipIf(WIN, "the hooks are for zsh and bash")
+    def test_shell_hook_keeps_your_config_dir(self):
+        hook = sh("shell-hook", "bash").stdout
+        script = (f"{hook}\nexport CLAUDE_CONFIG_DIR=/outer\ncd {TMP}; _ca_hook; echo 0=$CLAUDE_CONFIG_DIR\n"
+                  f"cd {self.r1}; _ca_hook; echo 1=$CA_ACCOUNT\ncd {TMP}; _ca_hook; echo 2=$CLAUDE_CONFIG_DIR")
+        out = subprocess.run(["bash", "-c", script], capture_output=True, text=True, env=dict(os.environ, PATH=os.environ["PATH"])).stdout
+        self.assertEqual(out.split(), ["0=/outer", "1=work", "2=/outer"])
+
+    def test_win_quote(self):
+        for arg, want in (("C:\\R&D", '"C:\\R&D"'), ("plain", "plain"), ("100%", '"100%"'), ("", '""'), ("a b\\", '"a b\\\\"')):
+            self.assertEqual(ca.win_quote(arg), want)
+
+    def test_no_web_ui(self):
+        self.assertNotEqual(sh("ui").returncode, 0)   # the app replaced it; ca opens no ports
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

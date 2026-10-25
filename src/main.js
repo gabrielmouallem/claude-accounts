@@ -67,18 +67,22 @@ function run(file, args, opts = {}) {
       resolve(err ? { ok: false, error: (stderr || err.message || '').trim().split('\n')[0] } : { ok: true }));
   });
 }
-async function openTerminal(command) {
+// Opens a new terminal window. `command` is the shell line for macOS and Linux, and what gets copied. On Windows,
+// `win()` returns a ca.windows* launch instead, which keeps paths and names out of the text cmd parses.
+async function openTerminal(command, win) {
   if (LAUNCH_DISABLED) return { ok: false, message: 'Launching is disabled in demo mode. Command copied.' };
   if (IS_MAC) {
-    const term = getPrefs().terminal;
-    const script = term === 'iTerm'
-      ? `tell application "iTerm"\nactivate\nset w to (create window with default profile)\ntell current session of w to write text ${JSON.stringify(command)}\nend tell`
-      : `tell application "Terminal" to do script ${JSON.stringify(command)}\ntell application "Terminal" to activate`;
-    const r = await run('osascript', ['-e', script]);
-    return r.ok ? { ok: true, message: `Opened in ${term === 'iTerm' ? 'iTerm' : 'Terminal'}` } : { ok: false, message: `Could not open terminal: ${r.error}` };
+    const iterm = getPrefs().terminal === 'iTerm';
+    // The command reaches AppleScript as an argument (argv), so it is never escaped into the script's text.
+    const script = iterm
+      ? ['tell application "iTerm"', 'activate', 'set w to (create window with default profile)', 'tell current session of w to write text (item 1 of argv)', 'end tell']
+      : ['tell application "Terminal"', 'do script (item 1 of argv)', 'activate', 'end tell'];
+    const r = await run('osascript', ['-e', 'on run argv', ...script.flatMap(l => ['-e', l]), '-e', 'end run', command]);
+    return r.ok ? { ok: true, message: `Opened in ${iterm ? 'iTerm' : 'Terminal'}` } : { ok: false, message: `Could not open terminal: ${r.error}` };
   }
   if (IS_WIN) {
-    spawn(`start "claude" cmd /k "${command}"`, { shell: true, detached: true, windowsHide: false, env: baseEnv() }).unref();
+    const l = win();
+    spawn(l.file, l.args, { ...l.options, detached: true, stdio: 'ignore', windowsHide: false }).unref();
     return { ok: true, message: 'Opened a command prompt' };
   }
   for (const [t, pre] of [['x-terminal-emulator', ['-e']], ['gnome-terminal', ['--']], ['konsole', ['-e']], ['kitty', []], ['alacritty', ['-e']], ['xterm', ['-e']]]) {
@@ -88,14 +92,15 @@ async function openTerminal(command) {
   return { ok: false, message: 'No terminal emulator found. Command copied.' };
 }
 async function launchDesktop(acc) {
-  const l = ca.desktopLaunch(acc);
+  const l = ca.desktopLaunch(acc, ca.SYSTEM, baseEnv());
   if (LAUNCH_DISABLED) return { ok: false, message: 'Launching is disabled in demo mode. Command copied.' };
   if (!l) return { ok: false, message: 'There is no official Claude Desktop for Linux. Command copied.' };
   if (IS_WIN && !fs.existsSync(l.file)) return { ok: false, message: 'Claude Desktop not found in %LOCALAPPDATA%\\AnthropicClaude. Command copied.' };
-  if (IS_WIN) { spawn(l.file, l.args, { detached: true, stdio: 'ignore', env: { ...baseEnv(), ...l.env } }).unref(); return { ok: true, message: 'Claude Desktop instance launched' }; }
-  const r = await run(l.file, l.args);
+  if (IS_WIN) { spawn(l.file, l.args, { detached: true, stdio: 'ignore', env: l.env }).unref(); return { ok: true, message: 'Claude Desktop instance launched' }; }
+  const r = await run(l.file, l.args, { env: l.env });
   return r.ok ? { ok: true, message: 'Claude Desktop instance launched' } : { ok: false, message: /Unable to find application/i.test(r.error) ? 'Claude Desktop is not installed. Command copied.' : `Launch failed: ${r.error}` };
 }
+// The Docker launch as one line: build the image on first use, then run it. Shown, copied, and run on macOS and Linux.
 function dockerShellCmd(repo, acc, engine, worktree) {
   ca.writeDockerfile();
   const [, build, runCmd] = ca.dockerCmds(repo, acc, engine, worktree);
@@ -107,8 +112,7 @@ function commandFor(kind, cfg, p) {
     const acc = cfg.accounts[V.existingAccount(cfg, p.account)];
     return kind === 'login' ? ca.loginCmd(acc) : ca.desktopCmd(acc);
   }
-  const repo = V.boundRepo(cfg, p.repo), b = cfg.repos[repo], acc = cfg.accounts[b.account];
-  if (!acc) throw new V.ValidationError('account of this repo no longer exists');
+  const repo = V.boundRepo(cfg, p.repo), b = cfg.repos[repo], acc = ca.accountOf(cfg, b);
   const wt = V.worktree(p.worktree);
   switch (kind) {
     case 'terminal': return ca.terminalCmd(repo, acc, wt);
@@ -122,13 +126,17 @@ function commandFor(kind, cfg, p) {
 async function withCopy(result, command) { if (!result.ok && command) clipboard.writeText(command); return { ...result, command }; }
 
 async function openRepo(repoPath, { worktree = null, forceTerminal = false } = {}) {
-  const cfg = ca.load(), repo = V.boundRepo(cfg, repoPath), b = cfg.repos[repo], acc = cfg.accounts[b.account];
-  if (!acc) throw new V.ValidationError('account of this repo no longer exists');
+  const cfg = ca.load(), repo = V.boundRepo(cfg, repoPath), b = cfg.repos[repo], acc = ca.accountOf(cfg, b);
   const wt = V.worktree(worktree);
   if (!forceTerminal && b.mode === 'desktop') return withCopy(await launchDesktop(acc), ca.desktopCmd(acc));
-  if (!forceTerminal && b.mode === 'docker') { const c = dockerShellCmd(repo, acc, 'docker', wt); return withCopy(await openTerminal(c), c); }
+  if (!forceTerminal && b.mode === 'docker') return openDocker(repo, acc, 'docker', wt);
   const c = ca.terminalCmd(repo, acc, wt);
-  return withCopy(await openTerminal(c), c);
+  return withCopy(await openTerminal(c, () => ca.windowsTerminal(repo, acc, wt, baseEnv())), c);
+}
+async function openDocker(repo, acc, engine, wt) {
+  if (engine === 'container' && !IS_MAC) throw new V.ValidationError('Apple container runs on macOS only.');
+  const c = dockerShellCmd(repo, acc, engine, wt);
+  return withCopy(await openTerminal(c, () => ca.windowsDocker(repo, acc, wt, baseEnv())), c);
 }
 
 // ---------------------------------------------------------------- IPC
@@ -149,7 +157,7 @@ function registerIpc() {
     ca.addAccount(cfg, name); return name;
   }));
   handle('account:remove', p => mutate(cfg => ca.removeAccount(cfg, V.existingAccount(cfg, p.account))));
-  handle('account:deepStatus', async p => { const cfg = ca.load(); return ca.deepStatus(cfg.accounts[V.existingAccount(cfg, p.account)], { env: baseEnv() }); });
+  handle('account:deepStatus', p => { const cfg = ca.load(); return ca.deepStatus(cfg.accounts[V.existingAccount(cfg, p.account)], { env: baseEnv() }); });
   handle('repo:bind', p => mutate(cfg => ca.bind(cfg, V.absPath(p.repo), V.existingAccount(cfg, p.account), V.mode(p.mode || 'terminal'))));
   handle('repo:unbind', p => mutate(cfg => ca.unbind(cfg, V.boundRepo(cfg, p.repo))));
   handle('dialog:pickRepo', async () => {
@@ -160,14 +168,13 @@ function registerIpc() {
   });
   handle('action:open', p => openRepo(p.repo, { worktree: p.worktree }));
   handle('action:terminal', p => openRepo(p.repo, { worktree: p.worktree, forceTerminal: true }));
-  handle('action:docker', async p => {
-    const cfg = ca.load(), repo = V.boundRepo(cfg, p.repo), acc = cfg.accounts[cfg.repos[repo].account];
-    const c = dockerShellCmd(repo, acc, V.engine(p.engine || 'docker'), V.worktree(p.worktree));
-    return withCopy(await openTerminal(c), c);
+  handle('action:docker', p => {
+    const cfg = ca.load(), repo = V.boundRepo(cfg, p.repo);
+    return openDocker(repo, ca.accountOf(cfg, cfg.repos[repo]), V.engine(p.engine || 'docker'), V.worktree(p.worktree));
   });
   handle('action:login', async p => {
     const cfg = ca.load(), acc = cfg.accounts[V.existingAccount(cfg, p.account)], c = ca.loginCmd(acc);
-    const r = await openTerminal(c);
+    const r = await openTerminal(c, () => ca.windowsLogin(acc, baseEnv()));
     return withCopy(r.ok ? { ...r, message: 'Finish the browser sign-in in the terminal window' } : r, c);
   });
   handle('action:desktop', async p => { const cfg = ca.load(), acc = cfg.accounts[V.existingAccount(cfg, p.account)]; return withCopy(await launchDesktop(acc), ca.desktopCmd(acc)); });
@@ -193,7 +200,7 @@ function registerIpc() {
   });
   handle('cli:status', () => cliStatus());
   handle('cli:install', () => {
-    const src = path.join(app.isPackaged ? process.resourcesPath : path.join(__dirname, '..', 'resources'), 'ca');
+    const src = app.isPackaged ? path.join(process.resourcesPath, 'ca') : path.join(__dirname, '..', 'cli', 'ca');
     const dest = path.join(os.homedir(), '.local', 'bin', IS_WIN ? 'ca.py' : 'ca');
     fs.mkdirSync(path.dirname(dest), { recursive: true });
     fs.copyFileSync(src, dest); fs.chmodSync(dest, 0o755);
@@ -224,9 +231,9 @@ function refreshTray() {
     const s = state();
     const repoItems = s.repos.length ? s.repos.map(r => ({
       label: `${r.name}`, sublabel: `${r.account} · ${r.mode}`, toolTip: r.repo, enabled: r.exists,
-      click: () => openRepo(r.repo).then(res => notify(res)),
+      click: () => openRepo(r.repo).then(notify, failed),
     })) : [{ label: 'No repositories yet', enabled: false }];
-    const accItems = s.accounts.map(a => ({ label: `Open Desktop — ${a.name}`, click: () => launchDesktop(ca.load().accounts[a.name]).then(notify) }));
+    const accItems = s.accounts.map(a => ({ label: `Open Desktop — ${a.name}`, click: () => launchDesktop(ca.load().accounts[a.name]).then(notify, failed) }));
     tray.setContextMenu(Menu.buildFromTemplate([
       { label: 'Repositories', enabled: false }, ...repoItems, { type: 'separator' },
       ...(accItems.length ? [{ label: 'Claude Desktop', submenu: accItems }, { type: 'separator' }] : []),
@@ -235,6 +242,7 @@ function refreshTray() {
   } catch { /* tray unsupported here */ }
 }
 function notify(res) { if (win && !win.isDestroyed()) win.webContents.send('app:event', { type: 'toast', ...res }); }
+const failed = e => notify({ ok: false, message: e.message });
 function send(type, extra = {}) { showWindow(); win.webContents.send('app:event', { type, ...extra }); }
 function buildMenu() {
   const dev = !app.isPackaged;

@@ -1,0 +1,33 @@
+{
+  "//": "Account names both src/core.js and cli/ca must accept or refuse. Read by both test suites.",
+  "valid": [
+    "work",
+    "personal",
+    "client-x",
+    "a",
+    "A1",
+    "x.y_z-1",
+    "9lives",
+    "a..b",
+    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  ],
+  "invalid": [
+    "",
+    "-work",
+    ".hidden",
+    "_x",
+    "a b",
+    "a/b",
+    "a\\b",
+    "..",
+    "../x",
+    "work!",
+    "a;b",
+    "$(x)",
+    "é",
+    "名前",
+    "a\nb",
+    "work\n",
+    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  ]
+}
