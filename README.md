@@ -38,6 +38,20 @@ the right one for the folder you're in. It ships as two things that share one co
 - **`ca`**, a single-file Python CLI with no dependencies, plus shell hooks so that plain `claude`
   picks the right account when you `cd` into a bound repo.
 
+### Stay on your subscription
+
+The goal is to get the most out of the Claude plans you already pay for (Pro, Max 5x, Max 20x,
+Team) and keep sessions off API keys and usage credits:
+
+- Every launch removes `ANTHROPIC_API_KEY` from the environment, so a key left in your shell can't
+  quietly move a session to per-token billing.
+- Each account signs in once with its own subscription and stays signed in.
+- Claude Desktop is a first-class way to open a repository, next to the terminal: each account gets
+  its own Desktop instance with its own `--user-data-dir`.
+
+Claude Accounts picks an account by *where* you work, never by how much of a plan is left. It doesn't
+rotate accounts to get around usage limits. Use each account as its plan's terms allow.
+
 ## How it works
 
 You bind a folder to an account once. Subfolders inherit the binding. Every session started there
@@ -282,6 +296,19 @@ Version 1.0. The core logic is covered by tests; real-world use on every platfor
   commands are generated and unit-tested, but no image was built or run.
 
 Bug reports from real macOS and Windows setups are very welcome.
+
+## Roadmap
+
+- **Rules by git remote or folder.** Bind `github.com/acme/*` once and every repository cloned from
+  that organization uses the right account, including ones you clone later. A single repository can
+  still override its rule.
+- **Sign-in apart from settings.** Keep one sign-in per account while sharing `CLAUDE.md`, skills and
+  MCP servers across accounts, with per-account overrides.
+- **Claude Desktop first.** Open repositories in Claude Desktop by default, with Terminal and Docker
+  as alternatives.
+- **A redesign** on a small design system: a neutral, native-feeling window, one shaded color per
+  account, light and dark themes, and a keyboard path for everything.
+- **A TypeScript core** shared by the app and the CLI, so the two can't drift apart.
 
 ## Development
 
