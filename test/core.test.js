@@ -65,7 +65,8 @@ test('env construction strips ANTHROPIC_API_KEY', () => {
   const acc = ca.load().accounts.work;
   const env = ca.claudeEnv(acc, { ANTHROPIC_API_KEY: 'x', PATH: '/bin' });
   assert.equal(env.CLAUDE_CONFIG_DIR, acc.config_dir); assert.ok(!('ANTHROPIC_API_KEY' in env));
-  assert.ok(ca.envShell(ca.load(), path.join(r1, 'src')).includes(`export CLAUDE_CONFIG_DIR=${acc.config_dir}`));
+  // shell text, so a Windows path (C:\...) comes quoted
+  assert.ok(ca.envShell(ca.load(), path.join(r1, 'src')).includes(`export CLAUDE_CONFIG_DIR=${ca.shQuote(acc.config_dir)}`));
   assert.ok(ca.envShell(ca.load(), TMP).includes('unset'));
 });
 
