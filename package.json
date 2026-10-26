@@ -46,7 +46,7 @@
     "playwright-core": "^1.64.1",
     "sharp": "^0.35.5",
     "typescript": "7.0.2",
-    "zod": "4.6.5"
+    "zod": "4.6.6"
   },
   "build": {
     "appId": "dev.gabriel.claude-accounts",
