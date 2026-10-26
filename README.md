@@ -234,8 +234,8 @@ ca shell-hook direnv ~/code/acme --write && direnv allow ~/code/acme
 - **No network, no telemetry.** The app cancels every request that isn't to its own bundled files,
   loads no remote content, and ships its own fonts and icons. The `claude` processes it launches
   talk to Anthropic as usual.
-- **`ANTHROPIC_API_KEY` is stripped** from every session it launches, so the account's subscription
-  login is used instead of a global key.
+- **`ANTHROPIC_API_KEY` is stripped** from every session it launches, in any letter case, so the
+  account's subscription login is used instead of a global key.
 - **Private folders.** Account folders are created `0700`. The app writes `config.json` atomically
   with mode `0600`. The file holds paths and bindings only, never credentials.
 - **Electron hardening.** `contextIsolation`, no `nodeIntegration`, a sandboxed renderer, a minimal
@@ -243,7 +243,12 @@ ca shell-hook direnv ~/code/acme --write && direnv allow ~/code/acme
   permission requests are denied.
 - **No shell strings from your data.** Folder and account names reach processes as arguments, the
   working directory or environment variables, never pasted into a command line. On Windows that keeps
-  a folder named `R&D` from being read as two commands.
+  a folder named `R&D` from being read as two commands. A folder name with a control character in it
+  is refused rather than typed into a terminal.
+- **Programs come from your `PATH`, never from the repository.** Windows looks for a program in the
+  current folder first, so a repository could carry its own `cmd.exe`, `claude.cmd`, or a `node.cmd`
+  for npm's `claude.cmd` to pick up. The app starts `cmd` by its full path, outside the repository,
+  and stops it from searching the repository; the CLI only looks in `PATH` and does the same.
 - **The CLI opens no ports** and, like the app, writes `config.json` with mode `0600`.
 
 Found a security issue? Please open a [private security advisory](https://github.com/gabrielmouallem/claude-accounts/security/advisories/new)
@@ -268,6 +273,22 @@ If `claude` lives somewhere else, make sure your login shell's `PATH` includes i
 </details>
 
 <details>
+<summary><strong>Windows: a copied command fails in PowerShell</strong></summary>
+
+The Windows commands the app copies, and `ca` prints, are for Command Prompt (`cmd`). They start with `@`
+so that PowerShell rejects the whole line instead of running part of it on the wrong account. Paste
+them into Command Prompt, or open the repository from the app.
+</details>
+
+<details>
+<summary><strong>Windows: a program in the repository isn't found by its name</strong></summary>
+
+Sessions opened from Claude Accounts set `NoDefaultCurrentDirectoryInExePath`, so `cmd` doesn't run a
+program from the current folder by name. Without it, a repository could hand npm's `claude.cmd` its
+own `node`. Run such a program by its path instead, for example `.\gradlew` rather than `gradlew`.
+</details>
+
+<details>
 <summary><strong>Removing an account didn't log it out</strong></summary>
 
 Removing an account only takes it out of `config.json`. Its folders (login, history, Desktop data) are
@@ -285,7 +306,7 @@ separate container login in `accounts/<name>/docker-claude`. Type `/login` insid
 
 Version 1.0. The core logic is covered by tests; real-world use on every platform is not yet.
 
-- **Verified:** 20 `node:test` tests (plus 3 that run only on Windows) and 19 `unittest` tests pass
+- **Verified:** 21 `node:test` tests (plus 8 that run only on Windows) and 22 `unittest` tests pass
   on macOS (Apple Silicon) and Linux, and CI runs them on Linux, macOS and Windows. They cover config
   handling and validation, lookup from subdirectories, environment construction, a real
   `claude --version` under a per-account `CLAUDE_CONFIG_DIR`, `claude auth status` isolation between
@@ -293,7 +314,8 @@ Version 1.0. The core logic is covered by tests; real-world use on every platfor
   the shell hooks (including putting back your own `CLAUDE_CONFIG_DIR`), IPC input validation, and
   config compatibility between the app and the CLI. The app and the CLI are checked to print the same
   commands and to accept the same account names. On Windows, the tests run the real `cmd.exe` from a
-  folder named with `cmd` syntax and check that nothing in the name runs. The UI was exercised and
+  folder named with `cmd` syntax and check that nothing in the name runs, and that a `cmd.exe`,
+  `claude.cmd` or `node.cmd` planted in the repository never does. The UI was exercised and
   screenshotted under Xvfb. The macOS bundle structure was inspected (Info.plist, icon, arm64/x64 Mach-O).
 - **Not yet verified:** the packaged app on real macOS and Windows, which covers the Keychain badge,
   vibrancy, the tray, AppleScript terminal launch, Claude Desktop multi-instance (`--user-data-dir`,

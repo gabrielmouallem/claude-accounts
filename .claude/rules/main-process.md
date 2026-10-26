@@ -21,9 +21,13 @@ paths:
 - **Accounts:** look up a binding's account with `ca.accountOf()`, which reports a removed account clearly. Never use
   `cfg.accounts[name]` on a name from config, since `__proto__` and `constructor` exist on every object.
 - **Launching** returns `{ ok, message, command }` through `withCopy()`, which copies the command when a launch fails.
-  - `openTerminal(command, win)`: `command` is the POSIX line for macOS and Linux (and what gets copied). `win()`
-    builds the `ca.windows*` spec. On Windows, paths reach cmd only through cwd and env; the line itself passes
-    `cmdSafe()`.
+  - `openTerminal(command, win)`: `command` is the POSIX line for macOS and Linux (and what gets copied). Terminal
+    and iTerm type it, so it and every copied command go through `V.typeable()`, which refuses control characters.
+  - `win()` builds the `ca.windows*` spec. On Windows, paths reach cmd only in environment variables that a launcher
+    batch file expands inside quotes; the line itself passes `cmdSafe()`. Every cmd starts by its full path in
+    `launchDir()` with PATH cut to absolute entries (`windowsEnv()`), and `open.cmd` sets
+    `NoDefaultCurrentDirectoryInExePath` before it enters the repository. So a `cmd.exe`, `claude.cmd` or `node.cmd`
+    checked into a repository can't run. Build a new Windows launch like `windowsTerminal()`.
   - Claude Desktop starts from `desktopLaunch()` argv, never a shell string.
   - Respect `LAUNCH_DISABLED` (`CA_NO_LAUNCH=1`) before spawning anything.
   - Spawn with `baseEnv()`: apps started from Finder get a minimal `PATH`, and this one comes from the login shell.

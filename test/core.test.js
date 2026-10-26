@@ -76,7 +76,7 @@ test('run command + worktree', () => {
   assert.ok(out.includes('env -u ANTHROPIC_API_KEY'));
   assert.ok(ca.terminalCmd(r1, acc, '', [], 'Linux').endsWith('claude --worktree'));
   const win = ca.terminalCmd('C:\\My Repo', acc, null, [], 'Windows');
-  assert.ok(win.startsWith('cd /d "C:\\My Repo"')); assert.ok(win.includes('set "ANTHROPIC_API_KEY="'));
+  assert.ok(win.startsWith('@pushd "C:\\My Repo"')); assert.ok(win.includes('set "ANTHROPIC_API_KEY="'));
   assert.equal(ca.shQuote("it's"), `'it'"'"'s'`); assert.equal(ca.shQuote(''), "''");
 });
 
@@ -153,6 +153,10 @@ test('IPC input validation (replaces web-UI token test)', () => {
   assert.throws(() => V.worktree('a;rm -rf /'), V.ValidationError);
   assert.equal(V.worktree(''), ''); assert.equal(V.worktree(undefined), null);
   assert.throws(() => V.str({ toString: () => 'x' }, 'x'), V.ValidationError);
+  // Terminal and iTerm type a command, and a control character in it would act before the shell reads the quoting
+  for (const bad of ["cd '/x\u0015open -a Calculator\n'", 'a\u001bb', 'a\u007fb', 'a\tb', 'a\u0000b'])
+    assert.throws(() => V.typeable(bad), V.ValidationError, JSON.stringify(bad));
+  assert.equal(V.typeable("cd '/tmp/Área ✓' && claude"), "cd '/tmp/Área ✓' && claude");
 });
 
 test('config.json stays compatible with the Python ca CLI', { skip: !which('python3') && 'python3 missing' }, () => {
@@ -197,6 +201,12 @@ test('the app and the CLI print the same commands', { skip: !which('python3') &&
   assert.deepEqual(py('print(json.dumps([ca.env_shell(ca.load(), p) for p in inp]))', paths), paths.map(p => ca.envShell(ca.load(), p)));
 });
 
+test('the app and the CLI keep the same PATH entries for Windows launches', { skip: !which('python3') && 'python3 missing' }, () => {
+  const paths = ['C:\\a;.;\\usr\\local\\bin;bin;"C:\\Program Files\\x";\\\\srv\\share\\b;D:/y;C:rel;;\\\\?\\C:\\long', '', '.', 'C:\\'];
+  assert.equal(ca.absoluteDirs(paths[0]), 'C:\\a;"C:\\Program Files\\x";\\\\srv\\share\\b;D:/y;\\\\?\\C:\\long');
+  assert.deepEqual(py('print(json.dumps([ca.absolute_dirs(p) for p in inp]))', paths), paths.map(p => ca.absoluteDirs(p)));
+});
+
 test('the shell hook puts back a CLAUDE_CONFIG_DIR you set yourself', { skip: !which('bash') && 'bash missing' }, () => {
   const cfg = ca.load(), at = p => ca.envShell(cfg, p), dir = n => cfg.accounts[n].config_dir;
   const script = [
@@ -229,24 +239,43 @@ test('config.json is written private, even over a leftover temp file', { skip: W
 
 test('Windows launches keep paths out of the text cmd parses', () => {
   const acc = ca.load().accounts.work, repo = 'C:\\Users\\me\\R&D & mkdir pwned (x) 100% ^!';
-  const base = { PATH: 'C:\\bin', ANTHROPIC_API_KEY: 'sk-test' };
+  // a key in lower case, PATH entries cmd reads against the current folder, and a machine that set
+  // NoDefaultCurrentDirectoryInExePath for every program
+  const base = { Path: 'C:\\bin;.;\\tools', SYSTEMROOT: 'D:\\Win', anthropic_api_key: 'sk-test', NoDefaultCurrentDirectoryInExePath: '1' };
+  const noKey = env => Object.keys(env).every(k => k.toUpperCase() !== 'ANTHROPIC_API_KEY');
   const t = ca.windowsTerminal(repo, acc, 'feat-x', base);
-  assert.equal(t.file, 'cmd.exe');
-  assert.deepEqual(t.args, ['/d', '/s', '/c', '"start "Claude" cmd /d /k claude --worktree feat-x"']);
-  assert.deepEqual([t.options.cwd, t.options.windowsVerbatimArguments, t.options.env.CLAUDE_CONFIG_DIR], [repo, true, acc.config_dir]);
-  assert.ok(!('ANTHROPIC_API_KEY' in t.options.env));
+  assert.equal(t.file, 'D:\\Win\\System32\\cmd.exe');
+  assert.deepEqual(t.args, ['/d', '/s', '/c', '"start "Claude" cmd /d /v:off /k call open.cmd"']);
+  assert.deepEqual([t.options.cwd, t.options.windowsVerbatimArguments], [path.join(ca.baseDir(), 'launch'), true]);
+  assert.deepEqual([t.options.env.CLAUDE_CONFIG_DIR, t.options.env.CA_REPO, t.options.env.CA_CLAUDE_ARGS], [acc.config_dir, repo, '--worktree feat-x']);
+  assert.ok(noKey(t.options.env) && !('NoDefaultCurrentDirectoryInExePath' in t.options.env)); // open.cmd sets it
+  assert.equal(t.options.env.Path, 'C:\\bin');
+  assert.equal(fs.readFileSync(path.join(ca.baseDir(), 'launch', 'open.cmd'), 'utf8'), ca.OPEN_CMD);
   const d = ca.windowsDocker(repo, acc, null, base);
-  assert.equal(d.args[3], '"start "Claude" cmd /d /k call run.cmd"');
+  assert.equal(d.args[3], '"start "Claude" cmd /d /v:off /k call run.cmd"');
   assert.deepEqual([d.options.cwd, d.options.env.CA_REPO, d.options.env.CA_CLAUDE_ARGS], [path.join(ca.baseDir(), 'docker'), repo, '']);
-  assert.ok(!('ANTHROPIC_API_KEY' in d.options.env));
+  assert.ok(noKey(d.options.env) && !('NoDefaultCurrentDirectoryInExePath' in d.options.env));
   assert.equal(fs.readFileSync(path.join(ca.baseDir(), 'docker', 'run.cmd'), 'utf8'), ca.DOCKER_RUN_CMD);
-  assert.match(ca.windowsLogin(acc, base).args[3], /cmd \/d \/k claude auth login"$/);
+  const login = ca.windowsLogin(acc, base);
+  assert.match(login.args[3], /cmd \/d \/v:off \/k claude auth login"$/);
+  assert.deepEqual([login.options.cwd, login.options.env.Path], [ca.launchDir(), 'C:\\bin']);
+  assert.ok(noKey(login.options.env));
+  // The lines people copy drop the key too. On Windows they also keep cmd from running a program from the
+  // repository, and pushd takes a network path, which cd can't.
+  assert.match(ca.loginCmd(acc, 'Darwin'), /^env -u ANTHROPIC_API_KEY CLAUDE_CONFIG_DIR=/);
+  assert.match(ca.terminalCmd('/r', acc, null, [], 'Linux'), /^cd \/r && env -u ANTHROPIC_API_KEY CLAUDE_CONFIG_DIR=/);
+  for (const line of [ca.terminalCmd(repo, acc, null, [], 'Windows'), ca.loginCmd(acc, 'Windows')])
+    assert.match(line, /set "NoDefaultCurrentDirectoryInExePath=1" && set "CLAUDE_CONFIG_DIR=[^"]+" && set "ANTHROPIC_API_KEY=" && claude/);
+  assert.ok(ca.terminalCmd(repo, acc, null, [], 'Windows').startsWith(`@pushd "${repo}" && `));
+  // @, which cmd ignores, keeps PowerShell from running any part of a pasted line
+  for (const line of [ca.loginCmd(acc, 'Windows'), ca.desktopCmd(acc, 'Windows')]) assert.ok(line.startsWith('@set "'), line);
   assert.throws(() => ca.windowsTerminal(repo, acc, 'x&calc', base), /refusing/);
   for (const bad of ['a^b', 'x%PATH%', '"q"', 'a|b', 'C:\\x']) assert.throws(() => ca.cmdSafe(bad), ca.CaError);
   for (const [arg, want] of [['C:\\R&D', '"C:\\R&D"'], ['plain', 'plain'], ['100%', '"100%"'], ['', '""'], ['a b\\', '"a b\\\\"']])
     assert.equal(ca.winQuote(arg), want);
-  const desk = ca.desktopLaunch(acc, 'Windows', { LOCALAPPDATA: 'C:\\L', ANTHROPIC_API_KEY: 'sk-test' });
-  assert.equal(desk.env.CLAUDE_CONFIG_DIR, acc.config_dir); assert.ok(!('ANTHROPIC_API_KEY' in desk.env));
+  assert.throws(() => ca.winQuote('say "hi" & calc'), /double quote/);
+  const desk = ca.desktopLaunch(acc, 'Windows', { LOCALAPPDATA: 'C:\\L', anthropic_api_key: 'sk-test' });
+  assert.ok(desk.env.CLAUDE_CONFIG_DIR === acc.config_dir && noKey(desk.env));
 });
 
 test('AppleScript gets the terminal command as an argument, unescaped', { skip: process.platform !== 'darwin' && 'macOS only' }, () => {

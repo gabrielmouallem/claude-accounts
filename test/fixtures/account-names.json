@@ -9,7 +9,11 @@
     "x.y_z-1",
     "9lives",
     "a..b",
-    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "console",
+    "com10",
+    "nullable",
+    "a.b"
   ],
   "invalid": [
     "",
@@ -28,6 +32,13 @@
     "名前",
     "a\nb",
     "work\n",
-    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "work.",
+    "con",
+    "NUL",
+    "com1",
+    "LPT9",
+    "aux.dev",
+    "Prn"
   ]
 }

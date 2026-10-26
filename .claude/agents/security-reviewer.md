@@ -24,12 +24,17 @@ only to read (`git diff`, `git log`, `git show`, `grep`) and to run the test sui
      - new dependencies with install scripts or telemetry (read their `package.json`);
      - listening sockets in the CLI.
    - **API key:** every new spawn of `claude`, or of anything that runs it, goes through `claudeEnv` / `claude_env` or
-     deletes `ANTHROPIC_API_KEY`.
+     `withoutVars()`, which drop `ANTHROPIC_API_KEY` in any letter case. `delete env.ANTHROPIC_API_KEY` misses
+     `anthropic_api_key`, which Windows reads all the same.
    - **Shell strings:**
      - `shell: true`, `shell=True`, `exec()`, `execSync` with a string;
      - `cmd /c` or `bash -c` with data interpolated;
      - AppleScript text containing data;
      - Windows lines that skip `cmdSafe`;
+     - a program found by name in a folder that isn't ours: bare `cmd.exe` in a spawn, a console started in the
+       repository, `shutil.which()` in the CLI, a child without `child_env()` (npm's `claude.cmd` runs `node` by
+       name), a PATH entry without a drive (`.`, `\tools`);
+     - a typed or copied command that skips `V.typeable` (control characters act before the shell parses quotes);
      - paths, names or worktree names that reach a command line instead of argv, cwd or env. Folder names can hold
        `& ; | $ \` ' " ^ % ( )` and newlines.
    - **IPC:**

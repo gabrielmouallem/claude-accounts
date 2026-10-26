@@ -21,9 +21,10 @@ let win = null, tray = null, userPath = process.env.PATH || '';
 // ---------------------------------------------------------------- environment
 // GUI apps on macOS get a minimal PATH; ask the login shell once so `claude` is found.
 function resolveUserPath() {
-  const extra = [path.join(os.homedir(), '.local/bin'), path.join(os.homedir(), '.claude/local'), '/opt/homebrew/bin', '/usr/local/bin'];
+  const extra = [path.join(os.homedir(), '.local/bin'), path.join(os.homedir(), '.claude/local'), ...(IS_WIN ? [] : ['/opt/homebrew/bin', '/usr/local/bin'])];
   const merge = p => Array.from(new Set([...p.split(path.delimiter), ...extra].filter(Boolean))).join(path.delimiter);
-  if (IS_WIN) { userPath = merge(userPath); return Promise.resolve(); }
+  // Windows reads a PATH entry without a drive against the current folder (see ca.absoluteDirs)
+  if (IS_WIN) { userPath = ca.absoluteDirs(merge(userPath)); return Promise.resolve(); }
   return new Promise(resolve => {
     const sh = process.env.SHELL || (IS_MAC ? '/bin/zsh' : '/bin/bash');
     execFile(sh, ['-ilc', 'printf "__CA_PATH__%s__CA_PATH__" "$PATH"'], { timeout: 4000, env: process.env }, (err, out) => {
@@ -70,6 +71,7 @@ function run(file, args, opts = {}) {
 // Opens a new terminal window. `command` is the shell line for macOS and Linux, and what gets copied. On Windows,
 // `win()` returns a ca.windows* launch instead, which keeps paths and names out of the text cmd parses.
 async function openTerminal(command, win) {
+  V.typeable(command);
   if (LAUNCH_DISABLED) return { ok: false, message: 'Launching is disabled in demo mode. Command copied.' };
   if (IS_MAC) {
     const iterm = getPrefs().terminal === 'iTerm';
@@ -104,7 +106,7 @@ async function launchDesktop(acc) {
 function dockerShellCmd(repo, acc, engine, worktree) {
   ca.writeDockerfile();
   const [, build, runCmd] = ca.dockerCmds(repo, acc, engine, worktree);
-  if (IS_WIN) return `${engine} image inspect ${ca.IMAGE} >nul 2>&1 || ${build} && ${runCmd}`;
+  if (IS_WIN) return `@set "NoDefaultCurrentDirectoryInExePath=1" && ${engine} image inspect ${ca.IMAGE} >nul 2>&1 || ${build} && ${runCmd}`;
   return `(${engine} image inspect ${ca.IMAGE} >/dev/null 2>&1 || ${build}) && ${runCmd}`;
 }
 function commandFor(kind, cfg, p) {
@@ -123,7 +125,7 @@ function commandFor(kind, cfg, p) {
     default: throw new V.ValidationError('invalid command kind');
   }
 }
-async function withCopy(result, command) { if (!result.ok && command) clipboard.writeText(command); return { ...result, command }; }
+async function withCopy(result, command) { if (!result.ok && command) clipboard.writeText(V.typeable(command)); return { ...result, command }; }
 
 async function openRepo(repoPath, { worktree = null, forceTerminal = false } = {}) {
   const cfg = ca.load(), repo = V.boundRepo(cfg, repoPath), b = cfg.repos[repo], acc = ca.accountOf(cfg, b);
@@ -178,8 +180,8 @@ function registerIpc() {
     return withCopy(r.ok ? { ...r, message: 'Finish the browser sign-in in the terminal window' } : r, c);
   });
   handle('action:desktop', async p => { const cfg = ca.load(), acc = cfg.accounts[V.existingAccount(cfg, p.account)]; return withCopy(await launchDesktop(acc), ca.desktopCmd(acc)); });
-  handle('command:get', p => commandFor(V.oneOf(p.kind, ['terminal', 'open', 'docker', 'container', 'desktop', 'login', 'direnv'], 'kind'), ca.load(), p));
-  handle('clipboard:write', p => { clipboard.writeText(V.str(p.text, 'text', 20000)); return true; });
+  handle('command:get', p => V.typeable(commandFor(V.oneOf(p.kind, ['terminal', 'open', 'docker', 'container', 'desktop', 'login', 'direnv'], 'kind'), ca.load(), p)));
+  handle('clipboard:write', p => { clipboard.writeText(V.typeable(V.str(p.text, 'text', 20000))); return true; });
   handle('shell:reveal', p => {
     const cfg = ca.load();
     const target = V.oneOf(p.target, ['config', 'account', 'repo'], 'target');

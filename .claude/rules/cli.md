@@ -14,7 +14,12 @@ paths:
   account is gone goes through `account_of()`.
 - **Processes:**
   - Always argv lists, never `shell=True`.
-  - Resolve `claude` with `shutil.which()`, because npm installs it as a `.cmd` shim on Windows.
+  - Find programs with `program()`, never `shutil.which()`. Windows looks in the current folder first, and a
+    repository could hold its own `claude.cmd`; `program()` reads only absolute PATH entries.
+  - npm installs `claude` as a `.cmd` shim on Windows, and cmd reads `& | < > ^ % ! ( ) "` in a shim's arguments
+    even inside quotes. Pass the arguments of anything `program()` found through `check_cmd_args()` first.
+  - Run every program with `env=child_env(...)`. On Windows the shim runs `node` by name, and `child_env` keeps cmd
+    from finding it in the current folder.
   - Docker runs from `docker_argv()`, not from splitting a printed line.
 - **Printed commands** use `q(s, system)`: `shlex.quote`, or `win_quote` for cmd. Hook output (`env --shell`,
   `shell-hook`) is always for a POSIX shell, so it uses `shlex.quote`.

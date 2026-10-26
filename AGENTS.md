@@ -42,12 +42,19 @@ config and user-data folder, so it never touches the real ones. `npm start` uses
 2. **No network.** The app loads only its own files (CSP plus the `webRequest` filter in `main.js`). It makes no
    requests and has no telemetry, update checks, CDNs or remote fonts. The CLI opens no ports. A new dependency must
    not phone home.
-3. **Subscription first.** Every launch drops `ANTHROPIC_API_KEY` (`claudeEnv` / `claude_env`). No new launch path may
-   pass it through.
+3. **Subscription first.** Every launch drops `ANTHROPIC_API_KEY` in any letter case, since Windows ignores case in
+   names (`claudeEnv` / `claude_env`). No new launch path may pass it through.
 4. **No shell strings built from data.** Spawn with argv (`execFile` / `spawn`, never `shell: true` or
    `shell=True`). Paths and names go in argv, the working directory or the environment. Shell lines exist to be
    shown and copied, quoted with `shQuote` / `winQuote`. When a terminal must run one, it is passed as an argument
-   (AppleScript `argv`, `bash -lc`). On Windows, cmd only ever sees fixed text (`cmdSafe`).
+   (AppleScript `argv`, `bash -lc`), and a line with a control character is never typed or copied
+   (`V.typeable`). On Windows, cmd only ever sees fixed text (`cmdSafe`); paths reach it in environment variables
+   that a launcher (`open.cmd`, `run.cmd`) expands inside quotes.
+   - **Programs come from PATH, never from the repository.** Windows looks in the current folder first, and npm's
+     `claude.cmd` runs `node` by name, so a repository could plant `cmd.exe`, `claude.cmd` or `node.cmd`. Start cmd
+     by its full path (`cmdExe`) in a folder of ours (`launchDir`), set `NoDefaultCurrentDirectoryInExePath` before
+     entering the repository, and keep only absolute PATH entries (`absoluteDirs`). The CLI finds programs with
+     `program()`, never `shutil.which()`, and runs them with `child_env()`.
 5. **Validate every IPC payload** in `main.js` with `validate.js`. `handle()` checks the sender. The renderer never
    gets Node, `fs` or `child_process`: keep `contextIsolation`, `sandbox` and no `nodeIntegration`.
 6. **Build the DOM with `h()` and text nodes.** Never use `innerHTML` with data. Keep the CSP: no inline scripts or

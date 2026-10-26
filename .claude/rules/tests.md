@@ -12,7 +12,8 @@ paths:
   folders, and skip when `claude` is missing.
 - **Credential checks** use dummy files made unreadable (`chmod 0`), which proves the code only checks that they exist.
 - **Platform cases** skip with a reason: `{ skip: WIN && 'POSIX file modes' }` or `@unittest.skipIf(WIN, "…")`.
-  Windows launch behavior goes in `test/windows.test.js`, which runs the real cmd.exe in CI.
+  Windows launch behavior goes in `test/windows.test.js`, which runs the real cmd.exe in CI from a repository that
+  holds its own `cmd.exe`, `claude.cmd` and `docker.cmd`. None of them may run.
 - **Shared behavior** gets one parity test. Use `py()` in `test/core.test.js` to run the CLI's functions on the same
   input, and keep shared cases in `test/fixtures/` (both suites read `account-names.json`).
 - **UI checks** run the app through `scripts/sandbox.js` (see `/run-app`), never against your real config.

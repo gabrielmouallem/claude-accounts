@@ -12,6 +12,9 @@ const IMAGE = 'claude-code-ca:latest';
 const SYSTEM = { darwin: 'Darwin', win32: 'Windows' }[process.platform] || 'Linux';
 // A letter or number first, then letters, numbers, dot, dash or underscore; 64 at most. Same rule in cli/ca.
 const ACCOUNT_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+// Account names become folder names, and Windows can't use these: it drops a trailing dot (so "work." would share
+// "work"), and device names such as con or nul, with or without an extension, aren't folders at all.
+const WINDOWS_DEVICE = /^(con|prn|aux|nul|com[0-9]|lpt[0-9])(\.|$)/i;
 // cmd.exe treats these as syntax outside quotes (see winQuote).
 const CMD_SPECIAL = /[\s&|<>^(),;=!"%]/;
 const hasOwn = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
@@ -25,17 +28,17 @@ ENV CLAUDE_CONFIG_DIR=/home/node/.claude
 WORKDIR /workspace
 CMD ["claude"]
 `;
-// Windows: runs the container from a console that starts in this folder (see windowsDocker). Paths arrive in
-// environment variables and stay inside quotes, so & ^ ( ) or % in a folder name are never read as cmd syntax.
-// Delayed expansion is switched off because a machine can turn it on for every cmd, and then ! and ^ would be.
-// The image check and build carry no path, so they use `call`, without which a batch-file docker would never
-// return here. `docker run` carries the paths and comes last, without `call`, which would expand % and double ^.
+// Windows: runs the container from a console that starts in this folder (see windowsDocker) and stays here, outside
+// the repository. Paths arrive in environment variables and stay inside quotes, so & ^ ( ) or % in a folder name
+// are never read as cmd syntax. Delayed expansion is switched off because a machine can turn it on for every cmd,
+// and then ! and ^ would be. The image check and build carry no path, so they use `call`, without which a
+// batch-file docker would never return here. `docker run` carries the paths and comes last, without `call`, which
+// would expand % and double ^.
 const DOCKER_RUN_CMD = [
   '@echo off',
   'setlocal DisableDelayedExpansion',
   'rem Written by Claude Accounts on every Docker launch.',
   `call docker image inspect ${IMAGE} >nul 2>&1 || call docker build -t ${IMAGE} . || exit /b 1`,
-  'cd /d "%CA_REPO%" || exit /b 1',
   'docker run --rm -it --name %CA_CONTAINER% -v "%CA_DOCKER_CONFIG%:/home/node/.claude" -v "%CA_REPO%:/workspace" ' +
     `-w /workspace -e CLAUDE_CONFIG_DIR=/home/node/.claude ${IMAGE} claude %CA_CLAUDE_ARGS%`,
   '',
@@ -85,7 +88,7 @@ function save(cfg) {
 class CaError extends Error {}
 
 function validAccountName(name) {
-  return typeof name === 'string' && ACCOUNT_RE.test(name);
+  return typeof name === 'string' && ACCOUNT_RE.test(name) && !name.endsWith('.') && !WINDOWS_DEVICE.test(name);
 }
 function addAccount(cfg, name, configDir, desktopDir, dockerDir) {
   if (!validAccountName(name)) throw new CaError(`invalid account name: ${JSON.stringify(name)}`);
@@ -148,12 +151,15 @@ function dockerLoginState(acc) {
 }
 // Asks the official CLI (local; prints account/plan, never the token). Only the first line is kept.
 function deepStatus(acc, { claude = 'claude', env = process.env, system = SYSTEM } = {}) {
-  // Windows: npm installs claude as a .cmd shim, which only cmd can run; the line is fixed text.
-  const [file, args, opts] = system === 'Windows'
-    ? ['cmd.exe', ['/d', '/s', '/c', `"${cmdSafe(`${claude} auth status --text`)}"`], { windowsVerbatimArguments: true }]
+  // Windows: npm installs claude as a .cmd shim, which only cmd can run. The line is fixed text, and cmd runs in a
+  // folder of ours (see the Windows launches).
+  const win = system === 'Windows';
+  const [file, args, opts] = win
+    ? [cmdExe(env), ['/d', '/s', '/c', `"${cmdSafe(`${claude} auth status --text`)}"`], { windowsVerbatimArguments: true, cwd: launchDir() }]
     : [claude, ['auth', 'status', '--text'], {}];
+  const runEnv = win ? windowsEnv(claudeEnv(acc, env)) : claudeEnv(acc, env);
   return new Promise(resolve => {
-    execFile(file, args, { env: claudeEnv(acc, env), timeout: 30000, windowsHide: true, ...opts },
+    execFile(file, args, { env: runEnv, timeout: 30000, windowsHide: true, ...opts },
       (err, stdout, stderr) => {
         const out = (stdout || stderr || '').trim();
         if (out) return resolve(out.split(/\r?\n/)[0]);
@@ -164,11 +170,13 @@ function deepStatus(acc, { claude = 'claude', env = process.env, system = SYSTEM
 }
 
 // ---------------------------------------------------------------- commands
+// A copy of `base` without the given variables, in any spelling: Windows ignores case in names.
+function withoutVars(base, ...names) {
+  return Object.fromEntries(Object.entries(base).filter(([k]) => !names.includes(k.toUpperCase())));
+}
 function claudeEnv(acc, base = process.env) {
-  const env = { ...base };
-  env.CLAUDE_CONFIG_DIR = acc.config_dir;
-  delete env.ANTHROPIC_API_KEY; // don't let a global key override the subscription login
-  return env;
+  // a global ANTHROPIC_API_KEY would override the subscription login
+  return { ...withoutVars(base, 'ANTHROPIC_API_KEY', 'CLAUDE_CONFIG_DIR'), CLAUDE_CONFIG_DIR: acc.config_dir };
 }
 function claudeArgv(worktree = null, extra = []) {
   const argv = ['claude'];
@@ -182,36 +190,37 @@ function shQuote(s) { // Python shlex.quote
   return "'" + s.replace(/'/g, `'"'"'`) + "'";
 }
 // One argument for a cmd.exe line that a person copies (the app never runs these through cmd; see windowsConsole).
-// Quotes keep & | < > ^ literal; %VAR% still expands inside them, which cmd offers no way around.
+// Quotes keep & | < > ^ literal; %VAR% still expands inside them, which cmd offers no way around. A double quote
+// inside the argument can't be kept: it would end the quoting and expose what follows, so it is refused.
 function winQuote(s) {
   s = String(s);
+  if (s.includes('"')) throw new CaError(`can't put ${JSON.stringify(s)} in a cmd line: it holds a double quote`);
   if (s && !CMD_SPECIAL.test(s)) return s;
-  let out = '"', bs = 0;
-  for (const c of s) {
-    if (c === '\\') { bs++; continue; }
-    if (c === '"') { out += '\\'.repeat(bs * 2) + '\\"'; bs = 0; continue; }
-    out += '\\'.repeat(bs) + c; bs = 0;
-  }
-  return out + '\\'.repeat(bs * 2) + '"';
+  return `"${s.replace(/\\+$/, m => m + m)}"`; // the program reading it would take \" for an escaped quote
 }
 function q(s, system = SYSTEM) { return system === 'Windows' ? winQuote(s) : shQuote(s); }
 
+// The Windows lines people copy are for cmd. They start with @, which cmd ignores and PowerShell can't parse: pasted
+// there, nothing runs, instead of `set` making PowerShell variables and claude starting on the wrong account. They
+// stop cmd from running a program from the current folder by name (see the Windows launches), and pushd also takes
+// a network path, where cd can't go.
+const WIN_NO_CWD = 'set "NoDefaultCurrentDirectoryInExePath=1"';
 function terminalCmd(repo, acc, worktree = null, extra = [], system = SYSTEM) {
   const argv = claudeArgv(worktree, extra).map(a => q(a, system)).join(' ');
   if (system === 'Windows')
-    return `cd /d ${q(repo, system)} && set "CLAUDE_CONFIG_DIR=${acc.config_dir}" && set "ANTHROPIC_API_KEY=" && ${argv}`;
+    return `@pushd ${q(repo, system)} && ${WIN_NO_CWD} && set "CLAUDE_CONFIG_DIR=${acc.config_dir}" && set "ANTHROPIC_API_KEY=" && ${argv}`;
   return `cd ${q(repo, system)} && env -u ANTHROPIC_API_KEY CLAUDE_CONFIG_DIR=${q(acc.config_dir, system)} ${argv}`;
 }
 function loginCmd(acc, system = SYSTEM) {
-  if (system === 'Windows') return `set "CLAUDE_CONFIG_DIR=${acc.config_dir}" && claude auth login`;
-  return `CLAUDE_CONFIG_DIR=${q(acc.config_dir, system)} claude auth login`;
+  if (system === 'Windows') return `@${WIN_NO_CWD} && set "CLAUDE_CONFIG_DIR=${acc.config_dir}" && set "ANTHROPIC_API_KEY=" && claude auth login`;
+  return `env -u ANTHROPIC_API_KEY CLAUDE_CONFIG_DIR=${q(acc.config_dir, system)} claude auth login`;
 }
 function desktopCmd(acc, system = SYSTEM) {
   const ud = acc.desktop_user_data_dir, cd = acc.config_dir;
   if (system === 'Darwin')
     return `open -n -a "Claude" --env CLAUDE_CONFIG_DIR=${shQuote(cd)} --args --user-data-dir=${shQuote(ud)}`;
   if (system === 'Windows')
-    return `set "CLAUDE_CONFIG_DIR=${cd}" && start "" "%LOCALAPPDATA%\\AnthropicClaude\\claude.exe" --user-data-dir="${ud}"`;
+    return `@set "CLAUDE_CONFIG_DIR=${cd}" && start "" "%LOCALAPPDATA%\\AnthropicClaude\\claude.exe" --user-data-dir="${ud}"`;
   return `# No official Claude Desktop for Linux; use terminal/docker mode.\n# Unofficial builds: CLAUDE_CONFIG_DIR=${shQuote(cd)} claude-desktop --user-data-dir=${shQuote(ud)}`;
 }
 // argv form used by the app to launch Desktop without a shell
@@ -248,29 +257,75 @@ function writeDockerfile() {
 
 // ---------------------------------------------------------------- Windows launches
 // cmd.exe parses its command line, & | < > ^ % included, even when they come from a folder name. So the line it runs
-// is fixed text plus checked tokens, and paths and names travel only in cwd and env.
+// is fixed text plus checked tokens, and paths travel in environment variables that the .cmd launchers expand
+// inside quotes.
+// Windows also runs a program from the current folder before PATH, and a repository could hold its own cmd.exe,
+// claude.cmd, or node.cmd: npm's claude.cmd runs node by name. So cmd.exe is started by its full path, and every cmd
+// starts in a folder of ours. The one that moves into the repository, open.cmd, sets
+// NoDefaultCurrentDirectoryInExePath before it runs anything there, which stops cmd from looking in the current
+// folder. That doesn't cover a PATH entry such as "." or "\tools", which cmd reads against the current folder, so
+// PATH keeps only absolute entries.
 function cmdSafe(text) {
   if (!/^[A-Za-z0-9 ._\/:-]*$/.test(text)) throw new CaError(`refusing to pass ${JSON.stringify(text)} through cmd`);
   return text;
 }
-// spawn(file, args, options) for a new console window running `line`. `start` gives it its own console,
-// so it outlives the app; the caller adds detached and stdio.
-function windowsConsole(line, cwd, env) {
-  return { file: 'cmd.exe', args: ['/d', '/s', '/c', `"start "Claude" cmd /d /k ${cmdSafe(line)}"`],
-           options: { cwd, env, windowsVerbatimArguments: true } };
+// The real cmd.exe, by full path: spawn looks for a bare name in the child's working folder first.
+function cmdExe(env = process.env) {
+  const root = Object.entries(env).find(([k]) => k.toUpperCase() === 'SYSTEMROOT');
+  return path.win32.join(root ? root[1] : 'C:\\Windows', 'System32', 'cmd.exe');
 }
+// The PATH entries that name a drive or a server. Same rule in cli/ca.
+function absoluteDirs(value = '') {
+  return value.split(';').filter(d => /^"?([A-Za-z]:[\\/]|\\\\[^\\/])/.test(d)).join(';');
+}
+function windowsEnv(env) {
+  return Object.fromEntries(Object.entries(env).map(([k, v]) => [k, k.toUpperCase() === 'PATH' ? absoluteDirs(v) : v]));
+}
+// Where consoles start. Nothing in it can stand in for cmd, claude or node.
+function launchDir() {
+  const dir = path.join(baseDir(), 'launch');
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  return dir;
+}
+// spawn(file, args, options) for a new console window running `line`. `start` gives it its own console, so it
+// outlives the app; the caller adds detached and stdio. /v:off for the reason given at DOCKER_RUN_CMD.
+function windowsConsole(line, cwd, env) {
+  return { file: cmdExe(env), args: ['/d', '/s', '/c', `"start "Claude" cmd /d /v:off /k ${cmdSafe(line)}"`],
+           options: { cwd, env: windowsEnv(env), windowsVerbatimArguments: true } };
+}
+// A console that runs one of our launchers from the folder it lives in. A machine can set
+// NoDefaultCurrentDirectoryInExePath for every program, and cmd would then not find the launcher there.
+function windowsLauncher(name, dir, env) {
+  return windowsConsole(`call ${name}`, dir, withoutVars(env, 'NODEFAULTCURRENTDIRECTORYINEXEPATH'));
+}
+// Starts Claude Code in the repository. pushd also takes a network path (\\server\share), where cmd can't start.
+// From then on cmd runs nothing from the repository by name, and the console keeps that rule after Claude Code
+// exits: a program from the repository runs as .\name. `call` comes back here when Claude Code exits; it reads the
+// line twice, which cmdSafe arguments survive. For a network path pushd took a drive letter, which popd gives back.
+// A Ctrl+C that reaches cmd while Claude Code isn't reading keys asks "Terminate batch job (Y/N)?". Answering Y,
+// or closing the window, skips popd, and the letter stays taken until you sign out.
+const OPEN_CMD = [
+  '@echo off',
+  'rem Written by Claude Accounts on every launch.',
+  'pushd "%CA_REPO%" || exit /b 1',
+  'set NoDefaultCurrentDirectoryInExePath=1',
+  'call claude %CA_CLAUDE_ARGS%',
+  'if "%CA_REPO:~0,2%"=="\\\\" popd',
+  '',
+].join('\r\n');
 function windowsTerminal(repo, acc, worktree = null, base = process.env) {
-  return windowsConsole(claudeArgv(worktree).join(' '), repo, claudeEnv(acc, base));
+  const dir = launchDir();
+  fs.writeFileSync(path.join(dir, 'open.cmd'), OPEN_CMD);
+  const env = { ...claudeEnv(acc, base), CA_REPO: repo, CA_CLAUDE_ARGS: cmdSafe(claudeArgv(worktree).slice(1).join(' ')) };
+  return windowsLauncher('open.cmd', dir, env);
 }
 function windowsLogin(acc, base = process.env) {
-  return windowsConsole('claude auth login', os.homedir(), claudeEnv(acc, base));
+  return windowsConsole('claude auth login', launchDir(), claudeEnv(acc, base));
 }
 function windowsDocker(repo, acc, worktree = null, base = process.env) {
-  const ctx = writeDockerfile();
-  const env = { ...base, CA_REPO: repo, CA_DOCKER_CONFIG: acc.docker_config_dir, CA_CONTAINER: containerName(repo),
-                CA_CLAUDE_ARGS: cmdSafe(claudeArgv(worktree).slice(1).join(' ')) }; // run.cmd expands it unquoted
-  delete env.ANTHROPIC_API_KEY;
-  return windowsConsole('call run.cmd', ctx, env);
+  const env = { ...withoutVars(base, 'ANTHROPIC_API_KEY'), CA_REPO: repo, CA_DOCKER_CONFIG: acc.docker_config_dir,
+                CA_CONTAINER: containerName(repo), CA_CLAUDE_ARGS: cmdSafe(claudeArgv(worktree).slice(1).join(' ')) };
+  return windowsLauncher('run.cmd', writeDockerfile(), env);
 }
 
 // `caCommand` is how the shell should invoke the CLI (e.g. "ca" or "python3 /path/ca").
@@ -323,6 +378,8 @@ module.exports = {
   MODES, IMAGE, SYSTEM, DOCKERFILE, DOCKER_RUN_CMD, CaError, configPath, baseDir, norm, load, save, validAccountName,
   addAccount, removeAccount, bind, unbind, accountOf, findRepo, loginState, dockerLoginState, deepStatus, claudeEnv,
   claudeArgv, shQuote, winQuote, q, terminalCmd, loginCmd, desktopCmd, desktopLaunch, dockerArgv, dockerCmds,
-  writeDockerfile, cmdSafe, windowsConsole, windowsTerminal, windowsLogin, windowsDocker, shellHook, envShell,
+  writeDockerfile, cmdSafe, cmdExe, OPEN_CMD, withoutVars, absoluteDirs, windowsEnv, launchDir, windowsConsole,
+  windowsTerminal, windowsLogin, windowsDocker,
+  shellHook, envShell,
   commandFor, rows, containerName,
 };

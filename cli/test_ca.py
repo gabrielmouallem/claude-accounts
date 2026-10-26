@@ -49,8 +49,9 @@ class T(unittest.TestCase):
 
     def test_env_construction(self):
         acc = ca.load()["accounts"]["work"]
-        env = ca.claude_env(acc, {"ANTHROPIC_API_KEY": "x", "PATH": "/bin"})
-        self.assertEqual(env["CLAUDE_CONFIG_DIR"], acc["config_dir"]); self.assertNotIn("ANTHROPIC_API_KEY", env)
+        # any spelling of the key goes, since Windows ignores case in names
+        env = ca.claude_env(acc, {"ANTHROPIC_API_KEY": "x", "anthropic_api_key": "y", "Claude_Config_Dir": "/old", "PATH": "/bin"})
+        self.assertEqual(env, {"CLAUDE_CONFIG_DIR": acc["config_dir"], "PATH": "/bin"})
         out = sh("env", "--shell", os.path.join(self.r1, "src")).stdout
         self.assertIn(f"export CLAUDE_CONFIG_DIR={acc['config_dir']}", out)
         self.assertIn("unset", sh("env", "--shell", TMP).stdout)
@@ -59,6 +60,46 @@ class T(unittest.TestCase):
         out = sh("run", self.r1, "--print", "--worktree", "feat-x").stdout
         self.assertIn("CLAUDE_CONFIG_DIR=", out); self.assertIn("claude --worktree feat-x", out)
         self.assertIn("claude --worktree", sh("run", self.r1, "--print", "-w").stdout)
+        r = sh("run", self.r1, "--print", "-w", "x&calc")   # the app's rule for worktree names
+        self.assertNotEqual(r.returncode, 0); self.assertIn("invalid worktree name", r.stderr)
+
+    def test_program_never_from_the_current_folder(self):
+        # A repository could hold its own claude, and a PATH entry that isn't absolute ("." or "") means the current folder.
+        name = "claude.cmd" if WIN else "claude"
+        found, planted = os.path.join(TMP, "bin"), os.path.join(TMP, "planted")
+        for d in (found, planted):
+            os.makedirs(d, exist_ok=True); write(os.path.join(d, name), "@exit /b 0\r\n" if WIN else "#!/bin/sh\n")
+            os.chmod(os.path.join(d, name), 0o755)
+        cwd, path = os.getcwd(), os.environ["PATH"]
+        try:
+            os.chdir(planted)
+            os.environ["PATH"] = os.pathsep.join([".", "", found])
+            self.assertEqual(os.path.normcase(ca.program("claude")), os.path.normcase(os.path.join(found, name)))
+            os.environ["PATH"] = os.pathsep.join([".", ""])
+            self.assertIsNone(ca.program("claude"))
+        finally:
+            os.chdir(cwd); os.environ["PATH"] = path
+
+    def test_windows_child_env(self):
+        # npm's claude.cmd runs node by name, so cmd must not look in the current folder, which can be the repository
+        system, ca.SYSTEM = ca.SYSTEM, "Windows"
+        try:
+            env = ca.child_env({"Path": "C:\\bin;.;\\tools", "X": "1"})
+            self.assertEqual(env, {"Path": "C:\\bin", "X": "1", "NoDefaultCurrentDirectoryInExePath": "1"})
+        finally:
+            ca.SYSTEM = system
+        if not WIN: self.assertEqual(ca.child_env({"PATH": ".:/bin"}), {"PATH": ".:/bin"})   # elsewhere, as given
+
+    def test_cmd_shim_arguments(self):
+        # Windows runs a .cmd or .bat through cmd, which reads these as syntax even inside quotes
+        system, ca.SYSTEM = ca.SYSTEM, "Windows"
+        try:
+            ca.check_cmd_args("C:\\npm\\claude.cmd", ["--model", "opus", "fix the bug", "a/b.c"])
+            ca.check_cmd_args("C:\\bin\\claude.exe", ["a&b"])   # an .exe reads its own arguments
+            for bad in ("a&b", "100%", "x^y", '"q"', "(x)", "a|b", "<x", "!x!", "a\nb"):
+                with self.assertRaises(SystemExit, msg=bad): ca.check_cmd_args("C:\\npm\\claude.CMD", [bad])
+        finally:
+            ca.SYSTEM = system
 
     def test_run_real_claude_version(self):
         if not shutil.which("claude"): self.skipTest("claude not installed")
@@ -161,6 +202,7 @@ class T(unittest.TestCase):
     def test_win_quote(self):
         for arg, want in (("C:\\R&D", '"C:\\R&D"'), ("plain", "plain"), ("100%", '"100%"'), ("", '""'), ("a b\\", '"a b\\\\"')):
             self.assertEqual(ca.win_quote(arg), want)
+        with self.assertRaises(SystemExit): ca.win_quote('say "hi" & calc')   # a quote inside would end the quoting
 
     def test_no_web_ui(self):
         self.assertNotEqual(sh("ui").returncode, 0)   # the app replaced it; ca opens no ports
