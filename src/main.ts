@@ -404,7 +404,7 @@ function buildMenu(): void {
 function createWindow(): void {
   const opts: BrowserWindowConstructorOptions = {
     width: 1200, height: 780, minWidth: 920, minHeight: 600, show: false, title: 'Claude Accounts',
-    backgroundColor: nativeTheme.shouldUseDarkColors ? '#0a0a0a' : '#ffffff',
+    backgroundColor: nativeTheme.shouldUseDarkColors ? '#121212' : '#ffffff',
     icon: path.join(__dirname, '..', 'build', 'icon.png'),
     webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true,
                       webSecurity: true, spellcheck: false, devTools: !app.isPackaged, webviewTag: false },

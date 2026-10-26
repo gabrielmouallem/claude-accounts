@@ -229,7 +229,7 @@ function repoRow(r: Row, i: number) {
   const more = h('button', { class: 'btn ghost sm icon-only', title: 'More actions' }, icon('more', 16));
   more.addEventListener('click', e => { e.stopPropagation(); repoMenu(r, more); });
   const row = h('div', { class: `row ${S.sel === i ? 'sel' : ''}`, 'data-i': i, ondblclick: () => openRepo(r), onclick: () => selectRow(i) },
-    h('div', { class: 'repo-cell' }, h('div', { class: `avatar ${c}` }, initials(r.name)),
+    h('div', { class: 'repo-cell' }, h('div', { class: `avatar mark ${c}` }, icon('claude', 18)),
       h('div', { class: 'repo-text' }, h('div', { class: 'repo-name' }, r.name, r.exists ? null : h('span', { class: 'tag warn' }, 'MISSING')), pathEl(r.repo))),
     h('div', {}, accSel), h('div', {}, seg), h('div', {}, loginBadge(r.login)),
     h('div', { class: 'row-actions' }, more,
