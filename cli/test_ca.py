@@ -1,5 +1,5 @@
 """Tests for ca. Run: python3 test_ca.py  (uses a throwaway config; no network, no login)."""
-import json, os, subprocess, sys, tempfile, unittest, importlib.util, importlib.machinery, shutil
+import json, os, shlex, subprocess, sys, tempfile, unittest, importlib.util, importlib.machinery, shutil
 HERE = os.path.dirname(os.path.abspath(__file__))
 WIN = os.name == "nt"
 def read(p):
@@ -53,7 +53,7 @@ class T(unittest.TestCase):
         env = ca.claude_env(acc, {"ANTHROPIC_API_KEY": "x", "anthropic_api_key": "y", "Claude_Config_Dir": "/old", "PATH": "/bin"})
         self.assertEqual(env, {"CLAUDE_CONFIG_DIR": acc["config_dir"], "PATH": "/bin"})
         out = sh("env", "--shell", os.path.join(self.r1, "src")).stdout
-        self.assertIn(f"export CLAUDE_CONFIG_DIR={acc['config_dir']}", out)
+        self.assertIn(f"export CLAUDE_CONFIG_DIR={shlex.quote(acc['config_dir'])}", out)   # shell text: C:\... comes quoted
         self.assertIn("unset", sh("env", "--shell", TMP).stdout)
 
     def test_run_print_and_worktree(self):
