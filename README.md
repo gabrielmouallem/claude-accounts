@@ -12,12 +12,15 @@
 <p align="center">
   <a href="https://github.com/gabrielmouallem/claude-accounts/actions/workflows/build.yml"><img src="https://github.com/gabrielmouallem/claude-accounts/actions/workflows/build.yml/badge.svg" alt="build"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT license"></a>
-  <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux%20(CLI)-lightgrey.svg" alt="platforms">
-  <img src="https://img.shields.io/badge/CLI-python3%20stdlib%20only-informational.svg" alt="python3 stdlib only">
+  <img src="https://img.shields.io/badge/platform-macOS-lightgrey.svg" alt="platform: macOS">
+  <img src="https://img.shields.io/badge/CLI-no%20dependencies-informational.svg" alt="CLI: no dependencies">
 </p>
 
 <p align="center">
-  <img src="docs/screenshots/1-repositories-dark.png" width="820" alt="Repositories view: each repo bound to an account and a launch mode">
+  <picture>
+    <source media="(prefers-color-scheme: light)" srcset="docs/screenshots/8-repositories-light.png">
+    <img src="docs/screenshots/1-repositories-dark.png" width="820" alt="Repositories view: each repo bound to an account and a launch mode">
+  </picture>
 </p>
 
 ---
@@ -35,8 +38,13 @@ the right one for the folder you're in. It ships as two things that share one co
 
 - **A desktop app** (Electron, macOS and Windows) with a repository list, per-account login status, a
   command palette and a menu-bar item.
-- **`ca`**, a single-file Python CLI with no dependencies, plus shell hooks so that plain `claude`
+- **`ca`**, a CLI with no dependencies that comes with the app, plus shell hooks so that plain `claude`
   picks the right account when you `cd` into a bound repo.
+
+> [!WARNING]
+> **Windows isn't ready.** macOS is the supported platform. The Windows build and its code are in the
+> repository, but they haven't been run on a real Windows machine, and the bundled `ca` command doesn't run
+> on Windows yet. Use it there only to try it out, and expect rough edges. Linux runs from source (below).
 
 ### Stay on your subscription
 
@@ -86,12 +94,56 @@ Everything lives in one place:
         └── docker-claude/          # container login
 ```
 
+### Dock apps (macOS)
+
+Every account's Claude Desktop is the same Claude app, with the same name and icon, so the Dock can't tell them apart.
+**Keep in Dock** gives an account a small app of its own: "*account* (Claude)" in `~/Applications/Claude Accounts`,
+with the account's name on its icon. A click on it does this:
+
+```text
+click "work (Claude)"
+  ─▶ is a Claude Desktop with --user-data-dir=…/accounts/work/desktop running?
+       yes  ─▶  bring it forward
+       no   ─▶  open a new Claude Desktop with --user-data-dir=…/accounts/work/desktop
+                                          and  CLAUDE_CONFIG_DIR=…/accounts/work/claude
+```
+
+- **Built on your Mac.** Claude Accounts ships one small program, `launcher/launcher.swift`, and builds each Dock app
+  around it. The app's `Info.plist` holds the account's name and folders, paths only. The same program draws the icon:
+  Claude's mark over the account's name in capitals, or over the first word of a long name (`grade-account` shows
+  GRADE). On a small Dock, the name gives way to its initial. Each app is signed ad hoc and registered with macOS, so
+  Spotlight finds it too.
+- **On a click,** it reads `config.json` first. It follows an account renamed with `ca`, and if the account is gone,
+  it offers to take itself out of the Dock and move itself to the Trash. It finds the account's Claude by the
+  `--user-data-dir` on its command line, never by its environment. Before it opens a new Claude, it drops
+  `ANTHROPIC_API_KEY`, so that Claude runs on the account's plan. Before an account's first sign-in, it shows how to
+  sign in to that window.
+- **While its Claude is open,** the Dock app stays open too, so the Dock shows it running, and it quits when that
+  Claude quits. **Quit** in its Dock menu quits that Claude the way Claude's own menu does, and switching to it with
+  ⌘Tab switches to its Claude. Claude keeps running after you close its last window. If it comes forward with no
+  window on screen, the Dock app sends it the reopen event that a click on Claude's own Dock icon sends. macOS asks
+  you once whether it may (see [Troubleshooting](#troubleshooting)).
+- **Claude Accounts opens Desktop through it.** For an account with a Dock app, opening a repository that opens with
+  Claude Desktop brings that account's Claude forward instead of starting a second one.
+- **Kept in step with your accounts.** Renaming an account rebuilds its Dock app under the new name, in the same place
+  in the Dock. Removing the account, or **Remove from Dock**, takes the tile out and deletes the app. Changes made
+  with `ca` count too: Claude Accounts watches `config.json`, and checks again when it starts. An update that changes
+  the program rebuilds every Dock app.
+- **Only its own tiles.** The Dock keeps its apps in its preferences (`com.apple.dock`, `persistent-apps`) and reads
+  them when it starts. Claude Accounts adds, moves and removes only the tiles whose ids start with
+  `dev.gabriel.claude-accounts.launcher.`, then restarts the Dock, which redraws for a moment. It does that only when
+  a tile was added, moved or removed, or an icon changed. If your organization manages the Dock with a profile,
+  nothing is changed.
+
+Claude itself still shows as Claude in the Dock and in ⌘Tab, since only Claude can change its own name and icon. The
+account's tile, with its running dot, tells you which accounts are open.
+
 ## Install the app
 
 1. Download the build for your machine from [Releases](https://github.com/gabrielmouallem/claude-accounts/releases):
    - **macOS:** `ClaudeAccounts-<version>-mac-arm64` (Apple Silicon) or `-mac-x64` (Intel), as `.dmg` or `.zip`.
      Drag **Claude Accounts.app** to `/Applications`.
-   - **Windows:** `ClaudeAccounts-<version>-win-x64-portable.exe`, or the `.zip`.
+   - **Windows (not ready, see above):** `ClaudeAccounts-<version>-win-x64-portable.exe`, or the `.zip`.
 2. The builds are **not signed or notarized** yet.
    - On macOS, the first launch is blocked. Right-click the app, choose **Open**, then **Open** again, or run:
      ```sh
@@ -109,8 +161,8 @@ There's no tray, and there's no official Claude Desktop for Linux.
 ## Using the app
 
 <p align="center">
-  <img src="docs/screenshots/4-onboarding-dark.png" width="49%" alt="Onboarding: add account, sign in, bind a repo">
-  <img src="docs/screenshots/2-accounts-dark.png" width="49%" alt="Accounts view with login status per account">
+  <img src="docs/screenshots/2-accounts-dark.png" width="49%" alt="Accounts view with sign-in status per account, dark theme">
+  <img src="docs/screenshots/9-accounts-light.png" width="49%" alt="Accounts view with sign-in status per account, light theme">
 </p>
 
 1. **Add an account.** Give it a short name like `work` or `personal`. It gets its own private folders.
@@ -123,7 +175,17 @@ Other things you can do:
 - Change a repo's account or mode inline in the list.
 - From the row menu: open in a new `claude --worktree`, force Terminal, run in Docker or Apple `container`,
   copy the exact command, copy a direnv line, reveal the folder, or unbind.
-- **Accounts** shows CLI and container login badges. **Check status** runs `claude auth status` for a definitive answer.
+- **Accounts** shows who each account is signed in as (email and plan), its CLI and container sign-in, and its
+  repositories. The status updates by itself, including right after a sign-in. **Refresh** (⌘R) asks again.
+- Rename an account from its **⋯** menu or the palette. Its repositories move with it, and it stays signed in.
+- **Keep an account in the Dock** (macOS), from its card, its **⋯** menu or the palette. It gets an app of its own,
+  "*account* (Claude)" in `~/Applications/Claude Accounts`, whose icon shows the account's name under Claude's mark.
+  Click it to open that account's Claude Desktop, or to bring it forward. The Dock shows it running while that Claude
+  is open, and **Quit** in its Dock menu quits that Claude. Renaming or removing the account updates or removes it.
+  See [Dock apps](#dock-apps-macos) for how they work.
+- Remove an account from its **⋯** menu. **Sign out and move its folders to the Trash** is on by default: it signs
+  the account out of Claude Code, then moves its folders (its Claude Code settings and history, and its Claude Desktop
+  data) to the Trash. Turn it off to keep them where they are.
 - **Settings**: theme, Terminal vs iTerm2, the menu-bar item, and a one-click install of the `ca` CLI to `~/.local/bin`.
 - The app watches `config.json`, so changes made with the CLI show up live.
 
@@ -151,24 +213,32 @@ On Windows and Linux, use <kbd>Ctrl</kbd> in place of <kbd>⌘</kbd>.
 </details>
 
 <details>
-<summary><strong>More screenshots</strong> (command palette, light theme)</summary>
+<summary><strong>More screenshots</strong> (repositories, command palette, settings, first run), dark and light</summary>
 
 <br>
 
 <p align="center">
-  <img src="docs/screenshots/3-command-palette-dark.png" width="49%" alt="Command palette">
+  <img src="docs/screenshots/1-repositories-dark.png" width="49%" alt="Repositories view, dark theme">
   <img src="docs/screenshots/8-repositories-light.png" width="49%" alt="Repositories view, light theme">
-  <img src="docs/screenshots/9-accounts-light.png" width="49%" alt="Accounts view, light theme">
+  <img src="docs/screenshots/3-command-palette-dark.png" width="49%" alt="Command palette, dark theme">
+  <img src="docs/screenshots/10-palette-light.png" width="49%" alt="Command palette, light theme">
+  <img src="docs/screenshots/7-settings-dark.png" width="49%" alt="Settings, dark theme">
+  <img src="docs/screenshots/11-settings-light.png" width="49%" alt="Settings, light theme">
+  <img src="docs/screenshots/4-onboarding-dark.png" width="49%" alt="First run: add an account, sign in, bind a repository, dark theme">
+  <img src="docs/screenshots/12-onboarding-light.png" width="49%" alt="First run: add an account, sign in, bind a repository, light theme">
 </p>
 
 </details>
 
 ## The `ca` CLI
 
-`ca` is one stdlib-only Python 3 script ([`cli/ca`](cli/ca)). It reads and writes the same
-`config.json` as the app, so you can mix them freely.
+`ca` reads and writes the same `config.json` as the app, so you can mix them freely.
 
-**Install** (or use *Settings → Install `ca`* in the app):
+**Install** from the app with *Settings → Install `ca`*. It puts the `ca` that comes with the app, a single
+executable, in `~/.local/lib/claude-accounts`, and a small script that starts it in `~/.local/bin/ca`.
+
+Without the app, use the Python version, [`cli/ca`](cli/ca): one stdlib-only Python 3 file. It is older and has no
+`rename-account`.
 
 ```sh
 mkdir -p ~/.local/bin && curl -fsSL https://raw.githubusercontent.com/gabrielmouallem/claude-accounts/main/cli/ca -o ~/.local/bin/ca && chmod +x ~/.local/bin/ca
@@ -193,10 +263,11 @@ cd ~/code/acme/packages/api && ca run   # finds the nearest bound parent, starts
 
 ```sh
 ca add-account <name> [--config-dir D] [--desktop-dir D] [--docker-dir D]
+ca rename-account <name> <new-name> # its repositories move with it; its folders and sign-in stay
 ca bind <repo> <account> [--mode terminal|docker|desktop]
 ca unbind <repo>
 ca list
-ca status [--deep]                  # --deep asks `claude auth status` (prints status, never the token)
+ca status [--deep]                  # --deep asks `claude auth status` who each account is signed in as
 ca run [repo] [-w [name]] [--print] [-- extra claude args]
                                     # -w passes --worktree; --print shows the command instead of running it
 ca login <account> [--print]
@@ -222,22 +293,32 @@ eval "$(ca shell-hook zsh)"
 # bash: add to ~/.bashrc (uses PROMPT_COMMAND)
 eval "$(ca shell-hook bash)"
 
-# direnv: writes an .envrc for one repo
-ca shell-hook direnv ~/code/acme --write && direnv allow ~/code/acme
+# direnv: adds the line to one repo's .envrc, then says how to allow it
+ca shell-hook direnv ~/code/acme --write
 ```
 
 ## Security and privacy
 
-- **Credential contents are never read.** Login badges only check whether
-  `<config_dir>/.credentials.json` exists, or ask the official `claude auth status`. On macOS the CLI
-  token lives in the Keychain, so the badge reads `Keychain?` until you run *Check status*.
+- **Credential contents are never read.** Sign-in status comes from whether
+  `<config_dir>/.credentials.json` exists and from the official `claude auth status`, which reports the
+  account's email and plan, never its token. On macOS the token lives in the Keychain, so the app asks
+  `claude auth status` about every account with files in its folder: once when it starts, once when an
+  account's folder first gets files while it runs (after `ca login`, say), again when you press **Refresh**,
+  and while it waits for a sign-in it opened.
 - **No network, no telemetry.** The app cancels every request that isn't to its own bundled files,
   loads no remote content, and ships its own fonts and icons. The `claude` processes it launches
-  talk to Anthropic as usual.
+  talk to Anthropic as usual. The status check runs with Claude Code's analytics, error reports and
+  update checks turned off, though like any `claude` command it may renew a sign-in that has expired.
+  The `ca` command the app installs starts with `DO_NOT_TRACK=1`, which turns off the crash reports
+  of the Bun runtime inside it.
 - **`ANTHROPIC_API_KEY` is stripped** from every session it launches, in any letter case, so the
   account's subscription login is used instead of a global key.
 - **Private folders.** Account folders are created `0700`. The app writes `config.json` atomically
-  with mode `0600`. The file holds paths and bindings only, never credentials.
+  with mode `0600`. The file holds paths and bindings only, never credentials. The app removes folders only when
+  you remove an account with **Sign out and move its folders to the Trash** on, and then moves only that account's
+  own folders, inside `~/.config/claude-accounts/accounts`, to the Trash.
+- **Dock apps** find their account's Claude by its command line, never its environment, and change only their own
+  tiles in the Dock.
 - **Electron hardening.** `contextIsolation`, no `nodeIntegration`, a sandboxed renderer, a minimal
   preload, a strict CSP, sender checks and validation on every IPC call. Navigation, new windows and
   permission requests are denied.
@@ -257,11 +338,24 @@ instead of a public issue.
 ## Troubleshooting
 
 <details>
-<summary><strong>The badge says <code>Keychain?</code></strong></summary>
+<summary><strong>The badge says <code>Unconfirmed</code></strong></summary>
 
-On macOS, Claude Code stores the login token in the Keychain, not in a file, so the app can't tell from
-the folder alone. Click **Check status** on the account (or run `ca status --deep`). It runs
-`claude auth status` with that account's config dir.
+The account's folder has files, but `claude auth status` didn't confirm a sign-in. Hover the badge to see why.
+Usually `claude` isn't on your login shell's `PATH` (see below). Click **Refresh** on Accounts, or run
+`ca status --deep`, to ask again.
+</details>
+
+<details>
+<summary><strong>Claude Desktop keeps asking me to sign in</strong></summary>
+
+Each account opens its own Claude Desktop window, with its own data folder, so each one signs in once and then stays
+signed in. A sign-in that finishes in your browser (**Continue with Google**, or the link in the sign-in email) comes
+back to Claude Desktop as a `claude://` link, and macOS hands that link to the Claude that was open first, not to the
+new window. That Claude ignores a Google sign-in it didn't start, and the email's link can sign it in instead.
+
+So sign in inside the account's window with **Continue with email** and type the code from the email there. Or quit
+your other Claude windows before you sign in with Google. The account's **⋯** menu has **Sign in to Claude Desktop…**
+with these steps, and the app shows them the first time you open an account's window.
 </details>
 
 <details>
@@ -291,8 +385,33 @@ own `node`. Run such a program by its path instead, for example `.\gradlew` rath
 <details>
 <summary><strong>Removing an account didn't log it out</strong></summary>
 
-Removing an account only takes it out of `config.json`. Its folders (login, history, Desktop data) are
-kept on purpose. To wipe them, use *Reveal folder* on the account first, then delete the folder.
+Remove it with **Sign out and move its folders to the Trash** on, which is the default. That runs `claude auth logout`
+for the account first, which deletes its sign-in from the Keychain, and then moves its folders to the Trash. Deleting the folder by hand
+leaves that sign-in in the Keychain, filed under the folder's path, so an account added later with the same name finds
+itself signed in. If that happened, add the account again, then remove it with the option on.
+</details>
+
+<details>
+<summary><strong>macOS asks whether "<em>account</em> (Claude)" may control Claude</strong></summary>
+
+It asks once, the first time you click an account's Dock app while that account's Claude is open without a window.
+Allowing it lets the app bring the window back, the way clicking Claude in the Dock does. Without it, quit that
+Claude from the app's Dock menu and click again. You can change your answer in System Settings, under Privacy &
+Security, then Automation.
+</details>
+
+<details>
+<summary><strong>The Dock shows an old icon</strong></summary>
+
+The Dock keeps its own cache of icons, and restarting the Dock doesn't clear it, so after an update a tile can keep
+its old picture. Clear the cache, then restart the Dock and Finder:
+
+```sh
+rm "$(getconf DARWIN_USER_CACHE_DIR)com.apple.dock.iconcache"
+killall -KILL Dock; killall Finder
+```
+
+The Dock writes a new cache as it starts.
 </details>
 
 <details>
@@ -306,7 +425,7 @@ separate container login in `accounts/<name>/docker-claude`. Type `/login` insid
 
 Version 1.0. The core logic is covered by tests; real-world use on every platform is not yet.
 
-- **Verified:** 21 `node:test` tests (plus 8 that run only on Windows) and 22 `unittest` tests pass
+- **Verified:** 43 `node:test` tests (plus 8 that run only on Windows) and 22 `unittest` tests pass
   on macOS (Apple Silicon) and Linux, and CI runs them on Linux, macOS and Windows. They cover config
   handling and validation, lookup from subdirectories, environment construction, a real
   `claude --version` under a per-account `CLAUDE_CONFIG_DIR`, `claude auth status` isolation between
@@ -317,12 +436,13 @@ Version 1.0. The core logic is covered by tests; real-world use on every platfor
   folder named with `cmd` syntax and check that nothing in the name runs, and that a `cmd.exe`,
   `claude.cmd` or `node.cmd` planted in the repository never does. The UI was exercised and
   screenshotted under Xvfb. The macOS bundle structure was inspected (Info.plist, icon, arm64/x64 Mach-O).
-- **Not yet verified:** the packaged app on real macOS and Windows, which covers the Keychain badge,
-  vibrancy, the tray, AppleScript terminal launch, Claude Desktop multi-instance (`--user-data-dir`,
-  `open --env`) and launching on Windows. Real sign-ins weren't tested either. Docker and Apple `container`
-  commands are generated and unit-tested, but no image was built or run.
+  The packaged app was run on a real Mac (Apple Silicon): two accounts signed in for real and each showed
+  its own email, and opening a sign-in started one Terminal window whether Terminal was open or not.
+- **Not yet verified:** anything on a real Windows machine, the tray and vibrancy, and Claude Desktop
+  multi-instance (`--user-data-dir`, `open --env`). Docker and Apple `container` commands are generated and
+  unit-tested, but no image was built or run.
 
-Bug reports from real macOS and Windows setups are very welcome.
+Bug reports from real macOS setups are very welcome.
 
 ## Roadmap
 
@@ -339,23 +459,27 @@ Bug reports from real macOS and Windows setups are very welcome.
 
 ## Development
 
-Requires Node.js 22+ and `python3` (for the CLI and its tests).
+Requires Node.js 24+, which runs the TypeScript tests and scripts as they are, and `python3` (for the Python CLI and
+its tests). `npm ci` installs Bun, which compiles the CLI.
 
 ```sh
 git clone https://github.com/gabrielmouallem/claude-accounts.git
 cd claude-accounts
 npm install
-npm start            # run the app
+npm start            # build, then run the app (with your real config)
+npm run typecheck    # tsc
 npm test             # node:test suite
 python3 -m unittest discover -s cli -p 'test_*.py' -v   # CLI tests (throwaway config, no network, no login)
 ```
 
 | Script | What it does |
 | --- | --- |
+| `npm run build` | Bundle `src/` into `out/` with esbuild. `start`, `sandbox`, `shots` and the `dist` scripts run it first |
+| `npm run typecheck` | Check the types of the app, the UI, the tests and the scripts with `tsc` |
 | `npm run dist:mac` | Unsigned macOS build, arm64 + x64, `.dmg` + `.zip` (`.dmg` needs macOS) |
 | `npm run dist:win` | Unsigned Windows build, portable `.exe` + `.zip` |
 | `npm run dist` | Both of the above |
-| `npm run icons` | Draw the icon from `scripts/icon-art.js` into `build/` (`.svg`, `.png`, `.icns`, `.ico`) and the in-app mark |
+| `npm run icons` | Draw the icon from `scripts/icon-art.ts` into `build/` (`.svg`, `.png`, `.icns`, `.ico`) and the in-app mark |
 | `npm run sandbox` | Run the app on fake demo accounts in a throwaway home, launching disabled (`-- --empty` for the first run) |
 | `npm run shots` | Regenerate `docs/screenshots` from fake demo data (macOS, or Linux under Xvfb) |
 
@@ -365,20 +489,23 @@ Set `CA_NO_LAUNCH=1` to run the app in a safe demo mode that copies commands ins
 **Layout**
 
 ```text
-src/main.js         Electron main process: IPC, launching, tray, menus, config watcher
-src/core.js         Config handling and command generation (a port of the CLI's logic)
-src/validate.js     Validation for every IPC payload
-src/preload.js      The small API exposed to the renderer
-src/renderer/       The UI: vanilla JS, no framework, bundled Inter font and icons
-cli/ca              The Python CLI, bundled with the app as is; tests keep it in step with src/core.js
+src/main.ts         Electron main process: IPC, launching, tray, menus, config watcher
+src/core.ts         Config handling and command generation (a port of the CLI's logic)
+src/validate.ts     A schema for every IPC payload (zod)
+src/types.ts        Types shared by the main process, the preload and the UI, IPC channels included
+src/preload.ts      The small API exposed to the renderer
+src/renderer/       The UI: TypeScript, no framework, bundled Inter font and icons
+cli/ca.ts           The CLI the app bundles, compiled with Bun (scripts/build-cli.ts); it shares src/core.ts
+cli/ca              The older Python CLI, for use without the app; tests keep it in step with src/core.ts
 test/               node:test suite (core logic + CLI compatibility)
-scripts/            Icon art and generation, the sandbox launcher, screenshots, demo config
+scripts/            The build (esbuild), icon art and generation, the sandbox launcher, screenshots, demo config
+out/                The build Electron runs and packages (git-ignored)
 AGENTS.md           Map and rules for contributors and coding agents (CLAUDE.md imports it)
 .claude/            Area rules, skills (/run-app, /release) and a security reviewer for Claude Code
 ```
 
-**CI and releases.** [`.github/workflows/build.yml`](.github/workflows/build.yml) runs both test suites
-and builds unsigned macOS and Windows artifacts. Pushing a `v*` tag attaches them to a GitHub Release,
+**CI and releases.** [`.github/workflows/build.yml`](.github/workflows/build.yml) runs the type check, the
+build and both test suites, and builds unsigned macOS and Windows artifacts. Pushing a `v*` tag attaches them to a GitHub Release,
 using only the built-in `GITHUB_TOKEN`.
 
 **Signing and notarization (optional).** Remove `"identity": null` from `build.mac`, add
@@ -390,7 +517,7 @@ using only the built-in `GITHUB_TOKEN`.
 Issues and pull requests are welcome. For bugs, please include your OS, the app or CLI version, and
 `claude --version`. For larger changes, open an issue first so we can agree on the approach.
 
-Before sending a PR, run `npm test` and the CLI tests. A change to `cli/ca` or `src/core.js` usually
+Before sending a PR, run `npm run typecheck`, `npm test` and the CLI tests. A change to `cli/ca` or `src/core.ts` usually
 needs the same change in the other; the parity tests say where they differ. To try a change, run
 `npm run sandbox`: the app opens on fake demo accounts and leaves your real config alone.
 Never include real config files, credentials or email addresses in an issue or PR.
@@ -407,7 +534,7 @@ are yours, not to share credentials or subscriptions.
 ## Disclaimer
 
 This is an independent project. It is **not affiliated with, endorsed by, or sponsored by Anthropic**.
-"Claude" and "Claude Code" are trademarks of Anthropic, PBC.
+"Claude", "Claude Code" and the Claude logo are trademarks of Anthropic, PBC.
 
 ## License
 

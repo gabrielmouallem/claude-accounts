@@ -13,7 +13,8 @@ the GitHub release with generated notes.
 
 1. **Check the ground.**
    - You're on `main`, the tree is clean, and you're in sync with `origin/main` (`git fetch && git status -sb`).
-   - Run `npm test` and `python3 -m unittest discover -s cli -p 'test_*.py'`. Stop on any failure.
+   - Run `npm run typecheck`, `npm test` and `python3 -m unittest discover -s cli -p 'test_*.py'`. Stop on any
+     failure.
 2. **Pick the version** from `$ARGUMENTS`: patch, minor, major or an exact x.y.z. If it's empty, ask. Apply it with
    `npm version <it> --no-git-tag-version`, which updates `package.json` and `package-lock.json`.
 3. **Update the README** where it names the version (Project status) and wherever this release changes what it says.

@@ -4,16 +4,19 @@
   "description": "Bind each git repository to its own Claude Code account (isolated CLAUDE_CONFIG_DIR, Claude Desktop --user-data-dir, or Docker). Desktop app + ca CLI.",
   "productName": "Claude Accounts",
   "private": true,
-  "main": "src/main.js",
+  "main": "out/main.cjs",
   "scripts": {
-    "start": "electron .",
-    "test": "node --test test/*.test.js",
-    "icons": "node scripts/make-icons.js",
-    "shots": "node scripts/screenshots.js",
-    "sandbox": "node scripts/sandbox.js",
-    "dist:mac": "electron-builder --mac --arm64 --x64",
-    "dist:win": "electron-builder --win --x64",
-    "dist": "electron-builder --mac --win"
+    "start": "node scripts/build.ts && electron .",
+    "build": "node scripts/build.ts",
+    "build:cli": "node scripts/build-cli.ts",
+    "typecheck": "tsc -p tsconfig.json && tsc -p src/renderer/tsconfig.json",
+    "test": "node --test test/*.test.ts",
+    "icons": "node scripts/make-icons.ts",
+    "shots": "node scripts/screenshots.ts",
+    "sandbox": "node scripts/sandbox.ts",
+    "dist:mac": "node scripts/build.ts && node scripts/build-cli.ts darwin-arm64 darwin-x64 && electron-builder --mac --arm64 --x64",
+    "dist:win": "node scripts/build.ts && electron-builder --win --x64",
+    "dist": "node scripts/build.ts && node scripts/build-cli.ts darwin-arm64 darwin-x64 && electron-builder --mac --win"
   },
   "keywords": [
     "claude",
@@ -34,13 +37,18 @@
   "bugs": {
     "url": "https://github.com/gabrielmouallem/claude-accounts/issues"
   },
-  "type": "commonjs",
+  "type": "module",
   "devDependencies": {
     "@fontsource-variable/inter": "^5.3.0",
+    "@types/node": "24.19.1",
+    "bun": "1.4.3",
     "electron": "^45.0.0",
     "electron-builder": "^26.18.0",
+    "esbuild": "0.28.2",
     "playwright-core": "^1.64.1",
-    "sharp": "^0.35.5"
+    "sharp": "^0.35.5",
+    "typescript": "7.0.2",
+    "zod": "4.6.6"
   },
   "build": {
     "appId": "dev.gabriel.claude-accounts",
@@ -51,7 +59,9 @@
       "buildResources": "build"
     },
     "files": [
-      "src/**/*",
+      "out/**/*",
+      "!out/cli/**",
+      "!out/launcher/**",
       "build/icon.png",
       "build/tray.png",
       "build/trayTemplate.png",
@@ -59,12 +69,6 @@
       "package.json",
       "!**/*.map",
       "!**/*.md"
-    ],
-    "extraResources": [
-      {
-        "from": "cli/ca",
-        "to": "ca"
-      }
     ],
     "asar": true,
     "electronLanguages": [
@@ -88,13 +92,23 @@
           ]
         }
       ],
+      "extraResources": [
+        {
+          "from": "out/cli/darwin-${arch}",
+          "to": "cli"
+        },
+        {
+          "from": "out/launcher",
+          "to": "launcher"
+        }
+      ],
       "category": "public.app-category.developer-tools",
       "icon": "build/icon.icns",
       "identity": null,
       "hardenedRuntime": false,
       "gatekeeperAssess": false,
       "darkModeSupport": true,
-      "minimumSystemVersion": "12.0",
+      "minimumSystemVersion": "13.0",
       "extendInfo": {
         "NSAppleEventsUsageDescription": "Claude Accounts opens Terminal or iTerm to run claude for the repository you choose.",
         "LSApplicationCategoryType": "public.app-category.developer-tools"
@@ -146,6 +160,12 @@
     "linux": {
       "target": [
         "AppImage"
+      ],
+      "extraResources": [
+        {
+          "from": "out/cli/linux-${arch}",
+          "to": "cli"
+        }
       ],
       "icon": "build/icons",
       "category": "Development"
