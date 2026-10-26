@@ -1,5 +1,5 @@
-'use strict';
-// Lucide-style 24px stroke icons (hand-drawn subset, bundled locally; no CDN).
+// Lucide-style 24px stroke icons (hand-drawn subset, bundled locally; no CDN). The markup is static: data never
+// reaches it.
 const ICONS = {
   folder: '<path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>',
   folderOpen: '<path d="m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2"/>',
@@ -38,14 +38,16 @@ const ICONS = {
   code: '<path d="m16 18 6-6-6-6"/><path d="m8 6-6 6 6 6"/>',
   layers: '<path d="m12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83Z"/><path d="m22 17.65-9.17 4.16a2 2 0 0 1-1.66 0L2 17.65"/><path d="m22 12.65-9.17 4.16a2 2 0 0 1-1.66 0L2 12.65"/>',
   info: '<circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/>',
-};
-function icon(name, size = 16, cls = '') {
+} as const;
+export type IconName = keyof typeof ICONS;
+
+export function icon(name: IconName, size = 16, cls = ''): SVGSVGElement {
   const t = document.createElement('template');
-  t.innerHTML = `<svg class="icon ${cls}" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name] || ''}</svg>`;
-  return t.content.firstChild;
+  t.innerHTML = `<svg class="icon ${cls}" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name]}</svg>`;
+  return t.content.firstChild as SVGSVGElement;
 }
-// App mark: the app icon's artwork (mark.svg, drawn by scripts/make-icons.js). Decorative: it always sits next to the name.
-function logoMark(size = 28) {
+// App mark: the app icon's artwork (mark.svg, drawn by scripts/make-icons.ts). Decorative: it always sits next to the name.
+export function logoMark(size = 28): HTMLImageElement {
   const img = document.createElement('img');
   Object.assign(img, { className: 'logo', src: 'mark.svg', width: size, height: size, alt: '', draggable: false });
   return img;

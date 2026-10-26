@@ -7,7 +7,7 @@ paths:
 
 - One file, stdlib only, Python 3.8+, `#!/usr/bin/env python3`. The app bundles it as is and its Install button
   copies it to `~/.local/bin`, so it can't import anything from this repo.
-- **It mirrors `src/core.js`** with the same functions in snake_case and identical output. `test/core.test.js` loads it
+- **It mirrors `src/core.ts`** with the same functions in snake_case and identical output. `test/core.test.ts` loads it
   as a module and compares the commands, the account-name rule and the shell-hook text with the app's. Change both
   sides together.
 - **Errors:** a user error is `raise SystemExit("what went wrong; how to fix it")`, never a traceback. A binding whose

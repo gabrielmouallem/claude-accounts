@@ -9,29 +9,33 @@ Sessions run on the account's subscription, never on an API key.
 
 | Path | What it is |
 | --- | --- |
-| `src/main.js` | Electron main process: IPC handlers, launching (terminal, Docker, Desktop), tray, menus, config watcher |
-| `src/core.js` | Config handling and command building. Mirrors `cli/ca` function for function |
-| `src/validate.js` | Validation for every IPC payload |
-| `src/preload.js` | The only API the renderer gets (`window.ca`) |
-| `src/renderer/` | The UI: vanilla JS with a small `h()` DOM helper, `styles.css`, `icons.js`. `mark.svg` is generated |
+| `src/main.ts` | Electron main process: IPC handlers, launching (terminal, Docker, Desktop), tray, menus, config watcher |
+| `src/core.ts` | Config handling and command building. Mirrors `cli/ca` function for function |
+| `src/validate.ts` | A zod schema for every IPC payload, and the lookups that check a payload against the config |
+| `src/types.ts` | Types shared by the main process, the preload and the UI: the config, the state, each IPC channel's result |
+| `src/preload.ts` | The only API the renderer gets (`window.ca`) |
+| `src/renderer/` | The UI: TypeScript with a small `h()` DOM helper, `styles.css`, `icons.ts`. `mark.svg` is generated |
 | `cli/ca` | The CLI: one Python file, stdlib only, bundled with the app as is |
-| `test/` | `node:test` suite. `core.test.js` also checks parity with the CLI; `windows.test.js` runs only on Windows |
+| `test/` | `node:test` suite. `core.test.ts` also checks parity with the CLI; `windows.test.ts` runs only on Windows |
 | `cli/test_ca.py` | `unittest` suite for the CLI |
-| `scripts/` | `icon-art.js` (the icon's source), `make-icons.js`, `sandbox.js`, `screenshots.js`, `demo-config.sh` |
+| `scripts/` | `build.ts` (esbuild), `icon-art.ts` (the icon's source), `make-icons.ts`, `sandbox.ts`, `screenshots.ts`, `demo-config.sh` |
 | `build/` | Generated icons (`npm run icons`). Don't edit by hand |
+| `out/` | The build Electron runs and packages (`npm run build`). Git ignores it |
 
 ## Commands
 
 ```sh
 npm ci                                                 # install
+npm run typecheck                                      # tsc, for the app, the renderer, the tests and the scripts
 npm test                                               # node:test suite
 python3 -m unittest discover -s cli -p 'test_*.py'     # CLI suite
+npm run build                                          # src/ into out/ (start, sandbox, shots and dist run it)
 npm run sandbox                                        # the app on fake demo data, launching disabled
-npm run icons                                          # redraw every icon from scripts/icon-art.js
+npm run icons                                          # redraw every icon from scripts/icon-art.ts
 npm run shots                                          # regenerate docs/screenshots (macOS, or Linux + Xvfb)
 ```
 
-Run the app through `scripts/sandbox.js` (`npm run sandbox`, or its `launch()` under Playwright). It uses a throwaway
+Run the app through `scripts/sandbox.ts` (`npm run sandbox`, or its `launch()` under Playwright). It uses a throwaway
 config and user-data folder, so it never touches the real ones. `npm start` uses your real config.
 
 ## Rules that never bend
@@ -39,7 +43,7 @@ config and user-data folder, so it never touches the real ones. `npm start` uses
 1. **Never read credentials.** Don't open, print, log, copy or send the contents of `.credentials.json`,
    `.claude.json`, Keychain items or tokens. Sign-in state comes from existence checks (`stat`) or from the first line
    of `claude auth status`. The tests make those files unreadable to prove it; keep those tests.
-2. **No network.** The app loads only its own files (CSP plus the `webRequest` filter in `main.js`). It makes no
+2. **No network.** The app loads only its own files (CSP plus the `webRequest` filter in `main.ts`). It makes no
    requests and has no telemetry, update checks, CDNs or remote fonts. The CLI opens no ports. A new dependency must
    not phone home.
 3. **Subscription first.** Every launch drops `ANTHROPIC_API_KEY` in any letter case, since Windows ignores case in
@@ -55,20 +59,25 @@ config and user-data folder, so it never touches the real ones. `npm start` uses
      by its full path (`cmdExe`) in a folder of ours (`launchDir`), set `NoDefaultCurrentDirectoryInExePath` before
      entering the repository, and keep only absolute PATH entries (`absoluteDirs`). The CLI finds programs with
      `program()`, never `shutil.which()`, and runs them with `child_env()`.
-5. **Validate every IPC payload** in `main.js` with `validate.js`. `handle()` checks the sender. The renderer never
-   gets Node, `fs` or `child_process`: keep `contextIsolation`, `sandbox` and no `nodeIntegration`.
+5. **Validate every IPC payload.** `handle()` in `main.ts` checks the sender, then parses the payload with its
+   channel's schema in `validate.ts`, which refuses unknown fields. The renderer never gets Node, `fs` or
+   `child_process`: keep `contextIsolation`, `sandbox` and no `nodeIntegration`.
 6. **Build the DOM with `h()` and text nodes.** Never use `innerHTML` with data. Keep the CSP: no inline scripts or
    styles, nothing remote.
 7. **Private files.** Account folders are `0700`. `config.json` is `0600`, written atomically (temp file plus rename).
    The app never deletes an account's folders.
 8. **One config, two writers.** The app and the CLI share `config.json`: sorted keys, 2-space indent, UTF-8. A change to
-   `src/core.js` usually needs the same change in `cli/ca`. The parity tests in `test/core.test.js` catch drift.
+   `src/core.ts` usually needs the same change in `cli/ca`. The parity tests in `test/core.test.ts` catch drift.
 9. **The account follows the repository**, never the usage left on a plan. Don't build anything that switches
    accounts to get around usage limits.
 
 ## Conventions
 
-- Match the code around you: CommonJS, `'use strict'`, `node:` imports, small functions, and comments that say why.
+- Match the code around you: TypeScript, ES modules, `node:` imports, small functions, and comments that say why.
+  - Node runs the tests and scripts as they are, stripping the types. So use only syntax it can erase (no `enum`,
+    `namespace` or parameter properties), and import a `.ts` file by its full name.
+  - esbuild only strips types too. `npm run typecheck` is what checks them, with `strict` and
+    `noUncheckedIndexedAccess`.
 - Python: stdlib only, runs on 3.8+. Report a user error with `raise SystemExit("…")`, never a traceback.
 - Copy: English, sentence case, second person. No em dashes and no exclamation marks; buttons are verbs.
   - Use these words: account, rule, repository, *opens with* (Claude Desktop, Terminal, Docker), *sign in* (verb) and
@@ -81,7 +90,7 @@ config and user-data folder, so it never touches the real ones. `npm start` uses
 
 ## Before you finish
 
-- Run both test suites.
+- Run `npm run typecheck` and both test suites.
 - For a UI change, run the app in the sandbox and look at it in both themes.
 - Check a change to launching, IPC, the renderer or the CLI against the rules above.
 

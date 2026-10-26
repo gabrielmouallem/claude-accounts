@@ -21,7 +21,8 @@ only to read (`git diff`, `git log`, `git show`, `grep`) and to run the test sui
      - `fetch`, `http`/`https`/`net`/`tls`/`dns`, WebSocket, EventSource, `sendBeacon`;
      - remote URLs in HTML or CSS (fonts, images, `@import`), `autoUpdater`;
      - changes to the CSP or to the `webRequest` filter;
-     - new dependencies with install scripts or telemetry (read their `package.json`);
+     - new dependencies with install scripts or telemetry (read their `package.json`). esbuild bundles what the
+       main process imports, so a new runtime import ships inside the app;
      - listening sockets in the CLI.
    - **API key:** every new spawn of `claude`, or of anything that runs it, goes through `claudeEnv` / `claude_env` or
      `withoutVars()`, which drop `ANTHROPIC_API_KEY` in any letter case. `delete env.ANTHROPIC_API_KEY` misses
@@ -39,7 +40,8 @@ only to read (`git diff`, `git log`, `git show`, `grep`) and to run the test sui
        `& ; | $ \` ' " ^ % ( )` and newlines.
    - **IPC:**
      - `ipcMain` handlers outside `handle()`;
-     - payload fields used without a `validate.js` check;
+     - a payload read without its schema in `validate.ts`, or a schema loosened (`z.any()`, `z.object` where it was
+       `z.strictObject`, a string without its `.max()`);
      - Node APIs reaching the renderer;
      - changes to `contextIsolation`, `sandbox`, `nodeIntegration`, `webviewTag`, or the navigation and window-open
        handlers.

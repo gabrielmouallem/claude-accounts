@@ -339,23 +339,27 @@ Bug reports from real macOS and Windows setups are very welcome.
 
 ## Development
 
-Requires Node.js 22+ and `python3` (for the CLI and its tests).
+Requires Node.js 24+, which runs the TypeScript tests and scripts as they are, and `python3` (for the CLI and its
+tests).
 
 ```sh
 git clone https://github.com/gabrielmouallem/claude-accounts.git
 cd claude-accounts
 npm install
-npm start            # run the app
+npm start            # build, then run the app (with your real config)
+npm run typecheck    # tsc
 npm test             # node:test suite
 python3 -m unittest discover -s cli -p 'test_*.py' -v   # CLI tests (throwaway config, no network, no login)
 ```
 
 | Script | What it does |
 | --- | --- |
+| `npm run build` | Bundle `src/` into `out/` with esbuild. `start`, `sandbox`, `shots` and the `dist` scripts run it first |
+| `npm run typecheck` | Check the types of the app, the UI, the tests and the scripts with `tsc` |
 | `npm run dist:mac` | Unsigned macOS build, arm64 + x64, `.dmg` + `.zip` (`.dmg` needs macOS) |
 | `npm run dist:win` | Unsigned Windows build, portable `.exe` + `.zip` |
 | `npm run dist` | Both of the above |
-| `npm run icons` | Draw the icon from `scripts/icon-art.js` into `build/` (`.svg`, `.png`, `.icns`, `.ico`) and the in-app mark |
+| `npm run icons` | Draw the icon from `scripts/icon-art.ts` into `build/` (`.svg`, `.png`, `.icns`, `.ico`) and the in-app mark |
 | `npm run sandbox` | Run the app on fake demo accounts in a throwaway home, launching disabled (`-- --empty` for the first run) |
 | `npm run shots` | Regenerate `docs/screenshots` from fake demo data (macOS, or Linux under Xvfb) |
 
@@ -365,20 +369,22 @@ Set `CA_NO_LAUNCH=1` to run the app in a safe demo mode that copies commands ins
 **Layout**
 
 ```text
-src/main.js         Electron main process: IPC, launching, tray, menus, config watcher
-src/core.js         Config handling and command generation (a port of the CLI's logic)
-src/validate.js     Validation for every IPC payload
-src/preload.js      The small API exposed to the renderer
-src/renderer/       The UI: vanilla JS, no framework, bundled Inter font and icons
-cli/ca              The Python CLI, bundled with the app as is; tests keep it in step with src/core.js
+src/main.ts         Electron main process: IPC, launching, tray, menus, config watcher
+src/core.ts         Config handling and command generation (a port of the CLI's logic)
+src/validate.ts     A schema for every IPC payload (zod)
+src/types.ts        Types shared by the main process, the preload and the UI, IPC channels included
+src/preload.ts      The small API exposed to the renderer
+src/renderer/       The UI: TypeScript, no framework, bundled Inter font and icons
+cli/ca              The Python CLI, bundled with the app as is; tests keep it in step with src/core.ts
 test/               node:test suite (core logic + CLI compatibility)
-scripts/            Icon art and generation, the sandbox launcher, screenshots, demo config
+scripts/            The build (esbuild), icon art and generation, the sandbox launcher, screenshots, demo config
+out/                The build Electron runs and packages (git-ignored)
 AGENTS.md           Map and rules for contributors and coding agents (CLAUDE.md imports it)
 .claude/            Area rules, skills (/run-app, /release) and a security reviewer for Claude Code
 ```
 
-**CI and releases.** [`.github/workflows/build.yml`](.github/workflows/build.yml) runs both test suites
-and builds unsigned macOS and Windows artifacts. Pushing a `v*` tag attaches them to a GitHub Release,
+**CI and releases.** [`.github/workflows/build.yml`](.github/workflows/build.yml) runs the type check, the
+build and both test suites, and builds unsigned macOS and Windows artifacts. Pushing a `v*` tag attaches them to a GitHub Release,
 using only the built-in `GITHUB_TOKEN`.
 
 **Signing and notarization (optional).** Remove `"identity": null` from `build.mac`, add
@@ -390,7 +396,7 @@ using only the built-in `GITHUB_TOKEN`.
 Issues and pull requests are welcome. For bugs, please include your OS, the app or CLI version, and
 `claude --version`. For larger changes, open an issue first so we can agree on the approach.
 
-Before sending a PR, run `npm test` and the CLI tests. A change to `cli/ca` or `src/core.js` usually
+Before sending a PR, run `npm run typecheck`, `npm test` and the CLI tests. A change to `cli/ca` or `src/core.ts` usually
 needs the same change in the other; the parity tests say where they differ. To try a change, run
 `npm run sandbox`: the app opens on fake demo accounts and leaves your real config alone.
 Never include real config files, credentials or email addresses in an issue or PR.

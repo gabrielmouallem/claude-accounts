@@ -14,13 +14,13 @@ CONFIG_PATH = os.environ.get("CA_CONFIG") or os.path.join(HOME, ".config", "clau
 BASE_DIR = os.path.dirname(CONFIG_PATH)
 MODES = ("terminal", "docker", "desktop")
 IMAGE = "claude-code-ca:latest"
-SYSTEM = {"darwin": "Darwin", "win32": "Windows"}.get(sys.platform, "Linux")  # same rule as src/core.js
-# Same rule as the app (src/core.js): a letter or number first, then letters, numbers, dot, dash or underscore; 64 at most.
+SYSTEM = {"darwin": "Darwin", "win32": "Windows"}.get(sys.platform, "Linux")  # same rule as src/core.ts
+# Same rule as the app (src/core.ts): a letter or number first, then letters, numbers, dot, dash or underscore; 64 at most.
 ACCOUNT_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 # Account names become folder names, and Windows can't use these: it drops a trailing dot (so "work." would share
 # "work"), and device names such as con or nul, with or without an extension, aren't folders at all.
 WINDOWS_DEVICE = re.compile(r"(con|prn|aux|nul|com[0-9]|lpt[0-9])(\.|$)", re.I)
-# Same rule as worktree() in src/validate.js.
+# Same rule as worktree in src/validate.ts.
 WORKTREE_RE = re.compile(r"[A-Za-z0-9._/-]{1,100}")
 # cmd.exe treats these as syntax outside quotes (see win_quote)
 CMD_SPECIAL = re.compile(r'[\s&|<>^(),;=!"%]')
@@ -29,7 +29,7 @@ CMD_META = re.compile(r'["&|<>^%!()\r\n]')
 # Windows PATH entries that name a drive or a server; cmd reads any other (".", "\tools") against the current folder
 WIN_ABS_DIR = re.compile(r'"?([A-Za-z]:[\\/]|\\\\[^\\/])')
 # The Windows lines ca prints are for cmd: they start with @, which PowerShell can't parse, and stop cmd from running a
-# program from the current folder by name. Same as src/core.js.
+# program from the current folder by name. Same as src/core.ts.
 WIN_NO_CWD = 'set "NoDefaultCurrentDirectoryInExePath=1"'
 
 DOCKERFILE = """FROM node:24-slim
@@ -175,7 +175,7 @@ def program(name):
     return None
 
 def absolute_dirs(value):
-    """The Windows PATH entries that name a drive or a server. Same rule as src/core.js."""
+    """The Windows PATH entries that name a drive or a server. Same rule as src/core.ts."""
     return ";".join(d for d in value.split(";") if WIN_ABS_DIR.match(d))
 
 def windows_env(env):
@@ -282,7 +282,7 @@ def shell_hook(kind, repo=None, cfg=None):
     raise SystemExit("kind must be direnv|zsh|bash")
 
 # The shell hook keeps a CLAUDE_CONFIG_DIR you set yourself: it is saved when you enter a bound repo and put
-# back when you leave, and a shell that never entered one is left alone. Same text as envShell in src/core.js.
+# back when you leave, and a shell that never entered one is left alone. Same text as envShell in src/core.ts.
 ENV_ENTER = ('if [ -z "${CA_ACCOUNT+x}" ] && [ -n "${CLAUDE_CONFIG_DIR+x}" ]; then '
              'export CA_OUTER_CLAUDE_CONFIG_DIR="$CLAUDE_CONFIG_DIR"; fi; ')
 ENV_LEAVE = ('if [ -n "${CA_ACCOUNT+x}" ]; then if [ -n "${CA_OUTER_CLAUDE_CONFIG_DIR+x}" ]; then '

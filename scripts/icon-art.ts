@@ -1,19 +1,24 @@
-'use strict';
 // The app icon, drawn from one geometry: two rings (one per account) and the lens where they overlap,
 // set apart from both rings by a gap so the light top of the lens never merges into the white rings.
-// scripts/make-icons.js writes build/icon.svg and src/renderer/mark.svg from it; keep this file the source.
+// scripts/make-icons.ts writes build/icon.svg and src/renderer/mark.svg from it; keep this file the source.
 
 // Two rings (centers 188 apart, r 190, stroke 40) on the 824px macOS squircle of a 1024 canvas.
 const A = 418, B = 606, CY = 512, R = 190, SW = 40;
 // The sheen fades along a smoothstep curve; straight segments between a few stops show as bands on the dark ground.
-const fade = peak => Array.from({ length: 9 }, (_, i) => { const t = i / 8; return [t, '#fff', +(peak * (1 - t * t * (3 - 2 * t))).toFixed(4)]; });
-const stops = list => list.map(([at, c, op]) => `<stop offset="${at}" stop-color="${c}"${op === undefined ? '' : ` stop-opacity="${op}"`}/>`).join('');
+type Stop = [at: number, color: string, opacity?: number];
+const fade = (peak: number): Stop[] => Array.from({ length: 9 }, (_, i) => { const t = i / 8; return [t, '#fff', +(peak * (1 - t * t * (3 - 2 * t))).toFixed(4)]; });
+const stops = (list: Stop[]) => list.map(([at, c, op]) => `<stop offset="${at}" stop-color="${c}"${op === undefined ? '' : ` stop-opacity="${op}"`}/>`).join('');
+
+// The look of one icon. Ground (bg, sheen, rim), rings and lens are gradients; sheen, shadow, glow and bevel are
+// opacities, and gap is the space between the lens and the rings.
+export interface Look { bg: Stop[]; sheen: number; shadow: number; gap: number; glow: number; bevel: number; rim: Stop[]; ring: Stop[]; lens: Stop[] }
+interface Options extends Omit<Look, 'shadow'> { shadow: number | false; p?: string; crop?: boolean; bodyOnly?: boolean }
 
 // o.p prefixes every id, so several icons can share one document.
 // o.shadow false drops the outer shadow, and o.crop trims the canvas to the squircle (the in-app mark).
 // The shadow is a separate blurred shape: a filter on the gradient itself makes Chrome render the gradient in a few coarse bands.
-function icon(o) {
-  const p = o.p || '', id = n => p + n, url = n => `url(#${p}${n})`;
+export function icon(o: Options): string {
+  const p = o.p || '', id = (n: string) => p + n, url = (n: string) => `url(#${p}${n})`;
   const rl = R - SW / 2 - o.gap;                                   // lens: overlap of the two discs, inset by the gap
   const half = Math.sqrt(rl * rl - ((B - A) / 2) ** 2), w = rl * 2 - (B - A);
   const top = CY - half, bot = CY + half;
@@ -47,18 +52,16 @@ function icon(o) {
 }
 
 // The default appearance: graphite squircle, white rings, lime lens.
-const DARK = {
+export const DARK: Look = {
   bg: [[0, '#2b2b30'], [1, '#09090b']], sheen: .1, shadow: .36, gap: 14, glow: .42, bevel: .5,
   rim: [[0, '#fff', .22], [.4, '#fff', .03], [1, '#fff', .06]],
   ring: [[0, '#ffffff'], [.55, '#ececef'], [1, '#b9b9c1']],
   lens: [[0, '#d9fa96'], [.35, '#b5ee4a'], [.75, '#84cc16'], [1, '#5d9612']],
 };
 // For light grounds such as a website or docs page.
-const LIGHT = {
+export const LIGHT: Look = {
   bg: [[0, '#ffffff'], [1, '#e2e2e7']], sheen: .6, shadow: .2, gap: 14, glow: .5, bevel: .55,
   rim: [[0, '#fff', .9], [.5, '#000', .04], [1, '#000', .1]],
   ring: [[0, '#3a3a41'], [1, '#09090b']],
   lens: [[0, '#c8f46e'], [.4, '#a3e635'], [.8, '#78b814'], [1, '#5d9612']],
 };
-
-module.exports = { icon, DARK, LIGHT };
