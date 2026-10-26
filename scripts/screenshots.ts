@@ -21,7 +21,7 @@ if (!only || only === 'main') {
   await page.keyboard.press('ArrowDown'); await page.keyboard.press('ArrowDown');
   await shot(page, '1-repositories-dark');
   await page.click('.row[data-i="1"] .row-actions .btn.ghost'); await shot(page, '5-row-menu-dark'); await page.keyboard.press('Escape');
-  await page.keyboard.press('Meta+2'); await page.click('.card .card-foot .btn.ghost'); await page.waitForTimeout(1200);
+  await page.keyboard.press('Meta+2'); await page.waitForSelector('.card'); await page.waitForTimeout(1200);
   await shot(page, '2-accounts-dark');
   await page.keyboard.press('Meta+1'); await page.keyboard.press('Meta+k'); await page.keyboard.type('acme');
   await shot(page, '3-command-palette-dark');
@@ -37,7 +37,7 @@ if (!only || only === 'light') {
     if (!(await page.locator('html.light').count())) throw new Error('light theme not applied');
     await page.keyboard.press('ArrowDown'); await page.keyboard.press('ArrowDown');
     await shot(page, '8-repositories-light');
-    await page.keyboard.press('Meta+2'); await page.click('.card .card-foot .btn.ghost'); await page.waitForTimeout(1200);
+    await page.keyboard.press('Meta+2'); await page.waitForSelector('.card'); await page.waitForTimeout(1200);
     await shot(page, '9-accounts-light');
     await page.keyboard.press('Meta+1'); await page.keyboard.press('Meta+k'); await page.waitForSelector('.pal-input input'); await page.waitForTimeout(250); await page.fill('.pal-input input', 'acme');
     await shot(page, '10-palette-light'); await page.keyboard.press('Escape');

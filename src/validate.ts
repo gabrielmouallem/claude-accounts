@@ -3,7 +3,7 @@
 // renderer shows as it is.
 import path from 'node:path';
 import * as z from 'zod';
-import { MODES, validAccountName } from './core.ts';
+import { MODES, WORKTREE, validAccountName } from './core.ts';
 import type { Account, Binding, Channel, Config, Prefs, TerminalApp, Theme } from './types.ts';
 
 export class ValidationError extends Error {}
@@ -23,15 +23,14 @@ const accountName = text('account name', 64).refine(validAccountName, {
 const account = text('account', 256);
 const repo = text('path').refine(p => path.isAbsolute(p), { error: 'path must be absolute' });
 // null for no worktree, '' to let Claude Code name it
-const worktree = z.string().max(100).regex(/^(?!-)[A-Za-z0-9._/-]*$/, { error: 'invalid worktree name' })
-  .nullish().transform(v => v ?? null);
+const worktree = z.string().regex(WORKTREE, { error: 'invalid worktree name' }).nullish().transform(v => v ?? null);
 const none = z.strictObject({});
 
 export const PAYLOADS = {
-  'state:get': none,
+  'state:get': z.strictObject({ fresh: z.boolean().optional() }),
   'account:add': z.strictObject({ name: accountName }),
   'account:remove': z.strictObject({ account }),
-  'account:deepStatus': z.strictObject({ account }),
+  'account:rename': z.strictObject({ account, name: accountName }),
   'repo:bind': z.strictObject({ repo, account, mode: z.enum(MODES).default('terminal') }),
   'repo:unbind': z.strictObject({ repo }),
   'dialog:pickRepo': none,

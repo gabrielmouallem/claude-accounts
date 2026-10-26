@@ -96,8 +96,8 @@ test('real claude --version under per-account CLAUDE_CONFIG_DIR', { skip: !which
 
 test('claude auth status is isolated per account', { skip: !which('claude') && 'claude not installed' }, async () => {
   const acc = account('work');
-  const line = await ca.deepStatus(acc);
-  assert.match(line, /Not logged in/);
+  const st = await ca.authStatus(acc);
+  assert.equal(st.state, 'not-logged-in'); assert.equal(st.email, null);
   // the CLI really used the per-account dir (it creates .claude.json there)
   assert.ok(fs.existsSync(path.join(acc.config_dir, '.claude.json')));
 });
@@ -113,6 +113,69 @@ test('login state uses existence only (unreadable file)', { skip: WIN && 'POSIX 
   assert.equal(ca.loginState(acc, 'Darwin'), 'keychain?');
   assert.equal(ca.loginState(acc, 'Linux'), 'not-logged-in');
   fs.rmSync(path.join(acc.config_dir, '.claude.json'));
+});
+
+test('claude auth status gives who an account is signed in as, and nothing else', () => {
+  const st = ca.parseAuthStatus(JSON.stringify({ loggedIn: true, authMethod: 'claude.ai', email: 'me@example.com', orgName: 'Example',
+    subscriptionType: 'max', accessToken: 'sk-ant-secret', refreshToken: 'sk-ant-refresh' }));
+  assert.deepEqual(st, { state: 'logged-in', email: 'me@example.com', plan: 'max', org: 'Example', note: 'signed in as me@example.com (max)' });
+  assert.ok(!JSON.stringify(st).includes('sk-ant'));
+  // signed out, an email it still remembers means nothing
+  assert.deepEqual(ca.parseAuthStatus('{"loggedIn": false, "email": "old@example.com"}'), { state: 'not-logged-in', email: null, plan: null, org: null, note: 'not signed in' });
+  // JSON with a notice around it still counts, and still gives only the four fields
+  const noisy = ca.parseAuthStatus('Update available\n{"loggedIn":true,"email":"me@example.com","accessToken":"sk-ant-oat01-FAKE"}\nRun claude update');
+  assert.equal(noisy.email, 'me@example.com'); assert.ok(!JSON.stringify(noisy).includes('sk-ant'));
+  // older versions print text
+  const none = { email: null, plan: null, org: null };
+  assert.deepEqual(ca.parseAuthStatus('Login method: Claude Max account\nOrganization: x'), { state: 'logged-in', ...none, note: 'signed in' });
+  assert.deepEqual(ca.parseAuthStatus('Not logged in. Run claude auth login to authenticate.'), { state: 'not-logged-in', ...none, note: 'not signed in' });
+  // no text of the answer is ever kept: anything else gets a fixed note
+  for (const out of ['\u001b[31mSomething else\u001b[0m\nmore', '{"loggedIn":"true","accessToken":"sk-ant-oat01-FAKE"}',
+                     '{"loggedIn":true,"accessToken":"sk-ant-oat01-FAKE"} {"x":1}', ''])
+    assert.deepEqual(ca.parseAuthStatus(out), { state: null, ...none, note: 'unrecognized answer' }, JSON.stringify(out));
+  // a field holding a control character would reach a terminal as is, so it is dropped
+  assert.equal(ca.parseAuthStatus(JSON.stringify({ loggedIn: true, email: 'a\u001b]8;;x\u0007b' })).email, null);
+});
+
+test('a new account gets folders of its own, even where a removed account left its sign-in', () => {
+  const cfg = ca.load();
+  ca.addAccount(cfg, 'temp'); ca.removeAccount(cfg, 'temp');
+  assert.equal(path.basename(path.dirname(ca.addAccount(cfg, 'temp').config_dir)), 'temp-2');
+});
+
+test('adding an account that exists keeps its folders, except the ones given', () => {
+  const cfg = ca.load(), before = account('work');
+  assert.deepEqual(ca.addAccount(cfg, 'work'), before);
+  const moved = ca.addAccount(cfg, 'work', path.join(TMP, 'elsewhere'));
+  assert.equal(path.basename(moved.config_dir), 'elsewhere');
+  assert.deepEqual([moved.desktop_user_data_dir, moved.docker_config_dir], [before.desktop_user_data_dir, before.docker_config_dir]);
+});
+
+test('a Desktop folder with nothing in it has never been opened', () => {
+  const acc = account('personal'), pref = path.join(acc.desktop_user_data_dir, 'Preferences');
+  assert.equal(ca.desktopNeverOpened(acc), true);
+  fs.writeFileSync(pref, '{}');
+  try { assert.equal(ca.desktopNeverOpened(acc), false); } finally { fs.rmSync(pref); }
+  assert.equal(ca.desktopNeverOpened({ ...acc, desktop_user_data_dir: path.join(TMP, 'missing') }), true);
+});
+
+test('rename-account moves the bindings and keeps the folders', () => {
+  const cfg = ca.load(), work = structuredClone(account('work'));
+  ca.renameAccount(cfg, 'work', 'job');
+  assert.deepEqual(cfg.accounts.job, work); assert.ok(!Object.hasOwn(cfg.accounts, 'work'));
+  assert.equal(cfg.repos[real(r1)]?.account, 'job'); assert.equal(cfg.repos[real(r2)]?.account, 'personal');
+  assert.throws(() => ca.renameAccount(cfg, 'job', 'Personal'), /already exists/);
+  assert.throws(() => ca.renameAccount(cfg, 'nope', 'x'), /unknown account/);
+  assert.throws(() => ca.renameAccount(cfg, '__proto__', 'x'), /unknown account/);
+  assert.throws(() => ca.renameAccount(cfg, 'job', '../x'), /invalid account name/);
+  ca.renameAccount(cfg, 'job', 'Job');   // only the case changes
+  assert.deepEqual(Object.keys(cfg.accounts).sort(), ['Job', 'personal']);
+  // the folder named "work" still holds Job's sign-in, so a new "work" gets folders of its own
+  const fresh = ca.addAccount(cfg, 'work');
+  assert.equal(path.basename(path.dirname(fresh.config_dir)), 'work-2');
+  // and folder names ignore case on macOS and Windows
+  ca.renameAccount(cfg, 'personal', 'home');
+  assert.equal(path.basename(path.dirname(ca.addAccount(cfg, 'Personal').config_dir)), 'Personal-2');
 });
 
 test('docker + Apple container commands', () => {
@@ -172,6 +235,11 @@ test('IPC payloads are checked against the schema for their channel', () => {
   assert.throws(() => V.parse('state:get', 'x'), /invalid payload/);
   assert.throws(() => V.parse('account:remove', undefined), /invalid account/);
   assert.deepEqual(V.parse('state:get', undefined), {});
+  assert.deepEqual(V.parse('state:get', { fresh: true }), { fresh: true });
+  assert.throws(() => V.parse('state:get', { fresh: 'yes' }), /invalid fresh/);
+  assert.throws(() => V.parse('account:rename', { account: 'work', name: '../x' }), /Use letters, numbers/);
+  assert.throws(() => V.parse('account:rename', { name: 'job' }), /invalid account/);
+  assert.deepEqual(V.parse('account:rename', { account: 'work', name: 'job' }), { account: 'work', name: 'job' });
   // names from a payload are looked up as own keys only
   for (const name of ['__proto__', 'constructor', 'nope']) assert.throws(() => V.knownAccount(cfg, name), /unknown account/);
   assert.throws(() => V.boundRepo(cfg, '/etc'), /not bound/);
@@ -295,7 +363,7 @@ test('Windows launches keep paths out of the text cmd parses', () => {
   for (const env of [{}, { SystemRoot: '' }]) assert.equal(ca.cmdExe(env), 'C:\\Windows\\System32\\cmd.exe');
   // The lines people copy drop the key too. On Windows they also keep cmd from running a program from the
   // repository, and pushd takes a network path, which cd can't.
-  assert.match(ca.loginCmd(acc, 'Darwin'), /^env -u ANTHROPIC_API_KEY CLAUDE_CONFIG_DIR=/);
+  assert.match(ca.loginCmd(acc, 'Darwin'), /^cd ~ && env -u ANTHROPIC_API_KEY CLAUDE_CONFIG_DIR=/);
   assert.match(ca.terminalCmd('/r', acc, null, [], 'Linux'), /^cd \/r && env -u ANTHROPIC_API_KEY CLAUDE_CONFIG_DIR=/);
   for (const line of [ca.terminalCmd(repo, acc, null, [], 'Windows'), ca.loginCmd(acc, 'Windows')])
     assert.match(line, /set "NoDefaultCurrentDirectoryInExePath=1" && set "CLAUDE_CONFIG_DIR=[^"]+" && set "ANTHROPIC_API_KEY=" && claude/);

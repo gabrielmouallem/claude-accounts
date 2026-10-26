@@ -1,19 +1,21 @@
-// Config handling and command building. Shares ~/.config/claude-accounts/config.json with the ca CLI, which mirrors
-// these functions. Credential files are only stat()ed, never opened.
+// Config handling and command building, for the app and the ca CLI (cli/ca.ts) alike. Both read and write
+// ~/.config/claude-accounts/config.json. Credential files are only stat()ed, never opened.
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { execFile } from 'node:child_process';
-import type { Account, Binding, Config, Engine, LoginState, Mode, Row, System } from './types.ts';
+import type { Account, AuthStatus, Binding, Config, Engine, LoginState, Mode, Row, System } from './types.ts';
 
 export type Env = Record<string, string | undefined>;
 
 export const MODES = ['terminal', 'docker', 'desktop'] as const satisfies readonly Mode[];
 export const IMAGE = 'claude-code-ca:latest';
 export const SYSTEM: System = process.platform === 'darwin' ? 'Darwin' : process.platform === 'win32' ? 'Windows' : 'Linux';
-// A letter or number first, then letters, numbers, dot, dash or underscore; 64 at most. Same rule in cli/ca.
+// A letter or number first, then letters, numbers, dot, dash or underscore; 64 at most.
 const ACCOUNT_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+// A worktree name for `claude --worktree`, up to 100 characters and not an option. Empty lets Claude Code pick one.
+export const WORKTREE = /^(?!-)[A-Za-z0-9._/-]{0,100}$/;
 // Account names become folder names, and Windows can't use these: it drops a trailing dot (so "work." would share
 // "work"), and device names such as con or nul, with or without an extension, aren't folders at all.
 const WINDOWS_DEVICE = /^(con|prn|aux|nul|com[0-9]|lpt[0-9])(\.|$)/i;
@@ -74,9 +76,12 @@ function sortKeys(v: unknown): unknown {
 export function load(): Config {
   const p = configPath();
   if (!fs.existsSync(p)) return { accounts: {}, repos: {} };
-  const cfg = JSON.parse(fs.readFileSync(p, 'utf8'));
+  let cfg: unknown;
+  try { cfg = JSON.parse(fs.readFileSync(p, 'utf8')); }
+  catch (e) { if (e instanceof SyntaxError) throw new CaError(`${p} isn't valid JSON (${e.message}); fix it or move it away`); throw e; }
+  if (!isObj(cfg)) throw new CaError(`${p} doesn't hold a JSON object; fix it or move it away`);
   for (const k of ['accounts', 'repos']) if (!isObj(cfg[k])) cfg[k] = {};
-  return cfg;
+  return cfg as unknown as Config;
 }
 export function save(cfg: Config): void {
   fs.mkdirSync(baseDir(), { recursive: true, mode: 0o700 });
@@ -97,12 +102,17 @@ export function addAccount(cfg: Config, name: string, configDir?: string, deskto
   // folders ignore case on macOS and Windows, so two names that differ only in case would share one login
   const same = Object.keys(cfg.accounts).find(n => n !== name && n.toLowerCase() === name.toLowerCase());
   if (same) throw new CaError(`account ${JSON.stringify(same)} already exists`);
-  const root = path.join(baseDir(), 'accounts', name);
+  // Adding an account that exists keeps its folders, except the ones given. A new account gets folders of its own: a
+  // renamed account keeps its folders and a removed one leaves them behind, so the folder named after this account can
+  // still hold another account's sign-in.
+  const had = Object.hasOwn(cfg.accounts, name) ? cfg.accounts[name] : undefined;
+  let root = path.join(baseDir(), 'accounts', name);
+  if (!had) for (let i = 2; inUse(cfg, root) || fs.existsSync(root); i++) root = path.join(baseDir(), 'accounts', `${name}-${i}`);
   const acc: Account = {
-    config_dir: norm(configDir || path.join(root, 'claude')),
-    desktop_user_data_dir: norm(desktopDir || path.join(root, 'desktop')),
+    config_dir: norm(configDir || had?.config_dir || path.join(root, 'claude')),
+    desktop_user_data_dir: norm(desktopDir || had?.desktop_user_data_dir || path.join(root, 'desktop')),
     // container logins are separate: the macOS Keychain is invisible to a Linux container
-    docker_config_dir: norm(dockerDir || path.join(root, 'docker-claude')),
+    docker_config_dir: norm(dockerDir || had?.docker_config_dir || path.join(root, 'docker-claude')),
   };
   for (const d of Object.values(acc)) { fs.mkdirSync(d, { recursive: true, mode: 0o700 }); try { fs.chmodSync(d, 0o700); } catch {} }
   cfg.accounts[name] = acc;
@@ -113,6 +123,25 @@ export function removeAccount(cfg: Config, name: string): void {
   const used = Object.entries(cfg.repos).filter(([, b]) => b.account === name).map(([r]) => r);
   if (used.length) throw new CaError(`account ${name} is still bound to ${used.length} repo(s); rebind or unbind them first`);
   delete cfg.accounts[name]; // folders on disk are kept on purpose
+}
+// Whether an account's folders are `dir` or inside it, compared as real paths (a temp folder on macOS is a symlink
+// into /private). Folder names ignore case on macOS and Windows.
+function inUse(cfg: Config, dir: string): boolean {
+  const d = norm(dir).toLowerCase();
+  return Object.values(cfg.accounts).some(a => [a.config_dir, a.desktop_user_data_dir, a.docker_config_dir]
+    .some(p => { const l = norm(p).toLowerCase(); return l === d || l.startsWith(d + path.sep); }));
+}
+// The repositories bound to the account move with it. Its folders stay where they are: Claude Code finds a macOS
+// sign-in in the Keychain by the folder's path, so moving them would sign the account out.
+export function renameAccount(cfg: Config, from: string, to: string): void {
+  if (!Object.hasOwn(cfg.accounts, from)) throw new CaError(`unknown account ${JSON.stringify(from)}`);
+  if (!validAccountName(to)) throw new CaError(`invalid account name: ${JSON.stringify(to)}`);
+  if (to === from) return;
+  const same = Object.keys(cfg.accounts).find(n => n !== from && n.toLowerCase() === to.toLowerCase());
+  if (same) throw new CaError(`account ${JSON.stringify(same)} already exists`);
+  cfg.accounts[to] = cfg.accounts[from]!;
+  delete cfg.accounts[from];
+  for (const b of Object.values(cfg.repos)) if (b.account === from) b.account = to;
 }
 export function bind(cfg: Config, repo: string, account: string, mode: string = 'terminal'): string {
   if (!Object.hasOwn(cfg.accounts, account)) throw new CaError(`unknown account ${JSON.stringify(account)}; run: ca add-account ${account}`);
@@ -152,24 +181,60 @@ export function loginState(acc: Account, system: System = SYSTEM): LoginState {
 export function dockerLoginState(acc: Account): LoginState {
   return fs.existsSync(path.join(acc.docker_config_dir, '.credentials.json')) ? 'logged-in' : 'not-logged-in';
 }
-// Asks the official CLI (local; prints account/plan, never the token). Only the first line is kept.
-export function deepStatus(acc: Account, { claude = 'claude', env = process.env, system = SYSTEM }: { claude?: string; env?: Env; system?: System } = {}): Promise<string> {
-  // Windows: npm installs claude as a .cmd shim, which only cmd can run. The line is fixed text, and cmd runs in a
-  // folder of ours (see the Windows launches).
+// A Desktop folder with nothing in it has never been opened, so that window isn't signed in yet. Only the names of
+// its entries are read.
+export function desktopNeverOpened(acc: Account): boolean {
+  try { return fs.readdirSync(acc.desktop_user_data_dir).length === 0; } catch { return true; }
+}
+// What turns off Claude Code's traffic beyond the work asked of it: analytics, error reports, update checks, and the
+// crash reports of the Bun runtime it is built on
+const QUIET = { CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1', DISABLE_TELEMETRY: '1', DO_NOT_TRACK: '1' };
+// Asks the official CLI who the account is signed in as. It reads the account's folder and the Keychain and prints
+// the email and plan, never the token. It runs with QUIET, since nobody asked for this run; like any claude command,
+// it may still renew a sign-in that has expired.
+export function authStatus(acc: Account, { claude = 'claude', env = process.env, system = SYSTEM }: { claude?: string; env?: Env; system?: System } = {}): Promise<AuthStatus> {
+  // It runs from the home folder, never from a repository the caller happens to be in. Windows: npm installs claude
+  // as a .cmd shim, which only cmd can run. The line is fixed text, and cmd runs in a folder of ours (see the Windows
+  // launches).
   const win = system === 'Windows';
   const [file, args, opts] = win
-    ? [cmdExe(env), ['/d', '/s', '/c', `"${cmdSafe(`${claude} auth status --text`)}"`], { windowsVerbatimArguments: true, cwd: launchDir() }]
-    : [claude, ['auth', 'status', '--text'], {}];
-  const runEnv = win ? windowsEnv(claudeEnv(acc, env)) : claudeEnv(acc, env);
+    ? [cmdExe(env), ['/d', '/s', '/c', `"${cmdSafe(`${claude} auth status`)}"`], { windowsVerbatimArguments: true, cwd: launchDir() }]
+    : [claude, ['auth', 'status'], { cwd: os.homedir() }];
+  const quiet = { ...withoutVars(claudeEnv(acc, env), ...Object.keys(QUIET)), ...QUIET };
+  const runEnv = win ? windowsEnv(quiet) : quiet;
   return new Promise(resolve => {
     execFile(file, args, { env: runEnv, timeout: 30000, windowsHide: true, ...opts },
       (err, stdout, stderr) => {
         const out = (stdout || stderr || '').trim();
-        if (out) return resolve(out.split(/\r?\n/)[0] ?? out);
-        if (err && err.code === 'ENOENT') return resolve('error: claude CLI not found');
-        resolve(err ? `exit ${err.code ?? 'error'}` : 'exit 0');
+        if (out) return resolve(parseAuthStatus(out));
+        const note = err && err.code === 'ENOENT' ? 'error: claude CLI not found' : err ? `exit ${err.code ?? 'error'}` : 'exit 0';
+        resolve({ state: null, email: null, plan: null, org: null, note });
       });
   });
+}
+// `claude auth status` prints JSON ({ loggedIn, email, subscriptionType, orgName, … }), which a notice may follow.
+// Older versions print text, whose first line is "Login method: …" or "Not logged in…". Only those four fields are
+// kept, and none of the answer's text: the note is always one of the fixed ones below.
+export function parseAuthStatus(out: string): AuthStatus {
+  const none = { email: null, plan: null, org: null };
+  const j = jsonObject(out);
+  if (j && typeof j.loggedIn === 'boolean') {
+    if (!j.loggedIn) return { state: 'not-logged-in', ...none, note: 'not signed in' };
+    const str = (v: unknown) => typeof v === 'string' && v.trim() && !/[\x00-\x1f\x7f]/.test(v) ? v.trim().slice(0, 200) : null;
+    const email = str(j.email), plan = str(j.subscriptionType), org = str(j.orgName);
+    return { state: 'logged-in', email, plan, org, note: `signed in${email ? ` as ${email}` : ''}${plan ? ` (${plan})` : ''}` };
+  }
+  const line = (out.split(/\r?\n/)[0] ?? '').trim();
+  if (/^not logged in/i.test(line)) return { state: 'not-logged-in', ...none, note: 'not signed in' };
+  if (/^login method:/i.test(line)) return { state: 'logged-in', ...none, note: 'signed in' };
+  return { state: null, ...none, note: 'unrecognized answer' };
+}
+// The JSON object in `out`: all of it, or from its first { to its last }
+function jsonObject(out: string): Record<string, unknown> | null {
+  for (const text of [out, out.slice(out.indexOf('{'), out.lastIndexOf('}') + 1)]) {
+    try { const j: unknown = JSON.parse(text); if (isObj(j)) return j; } catch {}
+  }
+  return null;
 }
 
 // ---------------------------------------------------------------- commands
@@ -186,6 +251,28 @@ export function claudeArgv(worktree: string | null = null, extra: readonly strin
   const argv = ['claude'];
   if (worktree !== null) argv.push('--worktree', ...(worktree ? [worktree] : []));
   return argv.concat(extra);
+}
+// The absolute entries of a PATH (macOS and Linux). "." or an empty entry means the current folder, which for the CLI
+// is often the repository, and a repository could hold its own claude, or a node for npm's claude to run.
+export function posixDirs(value = ''): string { return value.split(':').filter(d => d.startsWith('/')).join(':'); }
+// A program from PATH by its full path, or null. The CLI doesn't run on Windows.
+export function program(name: string, env: Env = process.env): string | null {
+  for (const dir of posixDirs(env.PATH).split(':').filter(Boolean)) {
+    const p = path.join(dir, name);
+    try { if (fs.statSync(p).isFile()) { fs.accessSync(p, fs.constants.X_OK); return p; } } catch {}
+  }
+  return null;
+}
+// The `ca` people run: a small script the app installs, which starts the executable at `program`. ca is a Bun
+// executable, and Bun uploads a report when it crashes unless DO_NOT_TRACK is set before it starts, which ca can't do
+// for itself. The script hands the caller's own DO_NOT_TRACK to ca, which gives it back to the programs it runs.
+export function cliWrapper(program: string): string {
+  return ['#!/bin/sh',
+    '# ca, installed by Claude Accounts. It runs the program below with DO_NOT_TRACK=1, which turns off the crash reports',
+    '# of the Bun runtime inside it. The programs ca starts get your own DO_NOT_TRACK back.',
+    'if [ -n "${DO_NOT_TRACK+x}" ]; then CA_CALLER_DO_NOT_TRACK="=$DO_NOT_TRACK"; else CA_CALLER_DO_NOT_TRACK=; fi',
+    'export CA_WRAPPER="$0" CA_CALLER_DO_NOT_TRACK DO_NOT_TRACK=1',
+    `exec ${shQuote(program)} "$@"`, ''].join('\n');
 }
 export function shQuote(s: string): string { // Python shlex.quote
   s = String(s);
@@ -217,7 +304,8 @@ export function terminalCmd(repo: string, acc: Account, worktree: string | null 
 }
 export function loginCmd(acc: Account, system: System = SYSTEM): string {
   if (system === 'Windows') return `@${WIN_NO_CWD} && set "CLAUDE_CONFIG_DIR=${acc.config_dir}" && set "ANTHROPIC_API_KEY=" && claude auth login`;
-  return `env -u ANTHROPIC_API_KEY CLAUDE_CONFIG_DIR=${q(acc.config_dir, system)} claude auth login`;
+  // From home, like `ca login`: a window Terminal reopens can start in a repository
+  return `cd ~ && env -u ANTHROPIC_API_KEY CLAUDE_CONFIG_DIR=${q(acc.config_dir, system)} claude auth login`;
 }
 export function desktopCmd(acc: Account, system: System = SYSTEM): string {
   const ud = acc.desktop_user_data_dir, cd = acc.config_dir;
@@ -280,7 +368,7 @@ export function cmdExe(env: Env = process.env): string {
   const root = Object.entries(env).find(([k]) => k.toUpperCase() === 'SYSTEMROOT')?.[1];
   return path.win32.join(root || 'C:\\Windows', 'System32', 'cmd.exe');
 }
-// The PATH entries that name a drive or a server. Same rule in cli/ca.
+// The PATH entries that name a drive or a server
 export function absoluteDirs(value = ''): string {
   return value.split(';').filter(d => /^"?([A-Za-z]:[\\/]|\\\\[^\\/])/.test(d)).join(';');
 }
@@ -336,7 +424,7 @@ export function windowsDocker(repo: string, acc: Account, worktree: string | nul
   return windowsLauncher('run.cmd', writeDockerfile(), env);
 }
 
-// `caCommand` is how the shell should invoke the CLI (e.g. "ca" or "python3 /path/ca").
+// `caCommand` is how the shell should run the CLI: "ca", or its full path, already quoted.
 export function shellHook(kind: string, { cfg, repo, caCommand = 'ca' }: { cfg?: Config; repo?: string; caCommand?: string } = {}): string {
   if (kind === 'direnv') {
     cfg = cfg || load();
@@ -350,7 +438,7 @@ export function shellHook(kind: string, { cfg, repo, caCommand = 'ca' }: { cfg?:
   throw new CaError('kind must be direnv|zsh|bash');
 }
 // The shell hook keeps a CLAUDE_CONFIG_DIR you set yourself: it is saved when you enter a bound repo and put back
-// when you leave, and a shell that never entered one is left alone. Same text as env_shell in cli/ca.
+// when you leave, and a shell that never entered one is left alone.
 const ENV_ENTER = 'if [ -z "${CA_ACCOUNT+x}" ] && [ -n "${CLAUDE_CONFIG_DIR+x}" ]; then ' +
   'export CA_OUTER_CLAUDE_CONFIG_DIR="$CLAUDE_CONFIG_DIR"; fi; ';
 const ENV_LEAVE = 'if [ -n "${CA_ACCOUNT+x}" ]; then if [ -n "${CA_OUTER_CLAUDE_CONFIG_DIR+x}" ]; then ' +

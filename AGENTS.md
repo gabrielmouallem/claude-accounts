@@ -1,9 +1,9 @@
 # AGENTS.md
 
-Claude Accounts opens each repository with the right Claude account. It is an Electron app plus a Python CLI (`ca`).
-Both read and write one config, `~/.config/claude-accounts/config.json`. Each account gets its own folders: a
-`CLAUDE_CONFIG_DIR` for Claude Code, a `--user-data-dir` for Claude Desktop, and a login folder for containers.
-Sessions run on the account's subscription, never on an API key.
+Claude Accounts opens each repository with the right Claude account. It is an Electron app plus a CLI (`ca`) that
+the app bundles. Both read and write one config, `~/.config/claude-accounts/config.json`. Each account gets its own
+folders: a `CLAUDE_CONFIG_DIR` for Claude Code, a `--user-data-dir` for Claude Desktop, and a login folder for
+containers. Sessions run on the account's subscription, never on an API key.
 
 ## Map
 
@@ -15,10 +15,11 @@ Sessions run on the account's subscription, never on an API key.
 | `src/types.ts` | Types shared by the main process, the preload and the UI: the config, the state, each IPC channel's result |
 | `src/preload.ts` | The only API the renderer gets (`window.ca`) |
 | `src/renderer/` | The UI: TypeScript with a small `h()` DOM helper, `styles.css`, `icons.ts`. `mark.svg` is generated |
-| `cli/ca` | The CLI: one Python file, stdlib only, bundled with the app as is |
-| `test/` | `node:test` suite. `core.test.ts` also checks parity with the CLI; `windows.test.ts` runs only on Windows |
-| `cli/test_ca.py` | `unittest` suite for the CLI |
-| `scripts/` | `build.ts` (esbuild), `icon-art.ts` (the icon's source), `make-icons.ts`, `sandbox.ts`, `screenshots.ts`, `demo-config.sh` |
+| `cli/ca.ts` | The CLI the app bundles and installs: TypeScript on `src/core.ts`, compiled with Bun by `scripts/build-cli.ts` |
+| `cli/ca` | The older CLI as one Python file, stdlib only, for use without the app. `cli/ca.ts` replaces it |
+| `test/` | `node:test` suite. `core.test.ts` also checks parity with the Python CLI; `cli.test.ts` runs the compiled one; `windows.test.ts` runs only on Windows |
+| `cli/test_ca.py` | `unittest` suite for the Python CLI |
+| `scripts/` | `build.ts` (esbuild), `build-cli.ts` (the bundled `ca`), `icon-art.ts` (the icon's source), `make-icons.ts`, `sandbox.ts`, `screenshots.ts`, `demo-config.sh` |
 | `build/` | Generated icons (`npm run icons`). Don't edit by hand |
 | `out/` | The build Electron runs and packages (`npm run build`). Git ignores it |
 
@@ -30,6 +31,7 @@ npm run typecheck                                      # tsc, for the app, the r
 npm test                                               # node:test suite
 python3 -m unittest discover -s cli -p 'test_*.py'     # CLI suite
 npm run build                                          # src/ into out/ (start, sandbox, shots and dist run it)
+node scripts/build-cli.ts darwin-arm64                 # the bundled ca, in out/cli/<platform>-<arch> (dist runs it)
 npm run sandbox                                        # the app on fake demo data, launching disabled
 npm run icons                                          # redraw every icon from scripts/icon-art.ts
 npm run shots                                          # regenerate docs/screenshots (macOS, or Linux + Xvfb)
@@ -41,11 +43,16 @@ config and user-data folder, so it never touches the real ones. `npm start` uses
 ## Rules that never bend
 
 1. **Never read credentials.** Don't open, print, log, copy or send the contents of `.credentials.json`,
-   `.claude.json`, Keychain items or tokens. Sign-in state comes from existence checks (`stat`) or from the first line
-   of `claude auth status`. The tests make those files unreadable to prove it; keep those tests.
+   `.claude.json`, Keychain items or tokens. Sign-in state comes from existence checks (`stat`) or from
+   `claude auth status`, of which only `loggedIn`, `email`, `subscriptionType` and `orgName` are kept
+   (`parseAuthStatus`). The tests make those files unreadable to prove it; keep those tests.
 2. **No network.** The app loads only its own files (CSP plus the `webRequest` filter in `main.ts`). It makes no
    requests and has no telemetry, update checks, CDNs or remote fonts. The CLI opens no ports. A new dependency must
    not phone home.
+   - A `claude` the app runs on its own (`claude auth status`) gets `QUIET` (`core.ts`), and runs only at start-up,
+     when an account's folder first gets files, on Refresh and while a sign-in it opened is pending.
+   - The installed `ca` is the `cliWrapper` script, which starts the Bun executable with `DO_NOT_TRACK=1`; without
+     it, Bun uploads a report when it crashes. `selfCommand()` prints the script, so the shell hook uses it too.
 3. **Subscription first.** Every launch drops `ANTHROPIC_API_KEY` in any letter case, since Windows ignores case in
    names (`claudeEnv` / `claude_env`). No new launch path may pass it through.
 4. **No shell strings built from data.** Spawn with argv (`execFile` / `spawn`, never `shell: true` or

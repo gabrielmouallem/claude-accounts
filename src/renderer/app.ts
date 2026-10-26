@@ -1,7 +1,7 @@
 // The UI. It builds the DOM with h() and text nodes, never markup from data, and reaches the app only through
 // window.ca (src/preload.ts).
 import { icon, logoMark, type IconName } from './icons.ts';
-import type { Api, CommandRequest, Launch, LoginState, Mode, PickedRepo, Row, State, View } from '../types.ts';
+import type { AccountView, Api, CommandRequest, Launch, LoginState, Mode, PickedRepo, Row, State, View } from '../types.ts';
 
 declare global { interface Window { ca: Api } }
 
@@ -13,8 +13,8 @@ const SHIFT = IS_MAC ? '⇧' : 'Shift';
 document.documentElement.classList.add(`platform-${PLATFORM}`);
 
 interface Onboarding { step: number; name?: string; account?: string; repo?: PickedRepo; mode?: Mode }
-const S: { data: State | null; view: View; filter: string; query: string; sel: number; deep: Map<string, string>; onb: Onboarding | null } =
-  { data: null, view: 'repos', filter: 'all', query: '', sel: -1, deep: new Map(), onb: null };
+const S: { data: State | null; view: View; filter: string; query: string; sel: number; onb: Onboarding | null } =
+  { data: null, view: 'repos', filter: 'all', query: '', sel: -1, onb: null };
 // The state, which every view renders from once refresh() has loaded it
 function data(): State { if (!S.data) throw new Error('The app state has not loaded yet.'); return S.data; }
 function byId(id: string): HTMLElement { const el = document.getElementById(id); if (!el) throw new Error(`#${id} is missing from index.html`); return el; }
@@ -51,9 +51,29 @@ const pathEl = (p: string, cls = 'repo-path', max = 0) => h('div', { class: cls,
 const colorOf = (name: string) => { const a = S.data?.accounts.find(x => x.name === name); return a ? `c${a.color % 8}` : 'c7'; };
 const initials = (s: string) => (s.replace(/[^A-Za-z0-9]/g, '')[0] || '?').toUpperCase();
 const LOGIN: Record<LoginState | 'missing-account', [string, string]> = {
-  'logged-in': ['ok', 'Signed in'], 'keychain?': ['warn', 'Keychain?'], 'not-logged-in': ['neutral', 'Not signed in'], 'missing-account': ['bad', 'Missing account'],
+  'logged-in': ['ok', 'Signed in'], 'keychain?': ['warn', 'Unconfirmed'], 'not-logged-in': ['neutral', 'Not signed in'], 'missing-account': ['bad', 'Missing account'],
 };
-const loginBadge = (s: LoginState | 'missing-account') => { const [c, t] = LOGIN[s] || ['neutral', s]; return h('span', { class: `badge ${c}`, title: s === 'keychain?' ? 'macOS keeps the token in the Keychain. Use “Check status” to confirm.' : s }, t); };
+// 'keychain?' is an account whose folder has files that `claude auth status` hasn't confirmed: the check failed,
+// or it hasn't run yet
+const loginBadge = (s: LoginState | 'missing-account', note?: string | null) => { const [c, t] = LOGIN[s] || ['neutral', s];
+  return h('span', { class: `badge ${c}`, title: s === 'keychain?' ? (note ? `claude auth status: ${note}` : 'Refresh to ask claude auth status') : t }, t); };
+// An account's CLI status, or what the app is doing about it: asking `claude auth status`, or waiting for a sign-in
+function accountBadge(a: AccountView) {
+  const busy = (t: string) => h('span', { class: 'badge neutral busy' }, icon('refresh', 11, 'spin'), t);
+  if (a.login !== 'logged-in' && a.signingIn) return busy('Waiting for sign-in');
+  if (a.login === 'keychain?' && a.checking) return busy('Checking');
+  return loginBadge(a.login, a.note);
+}
+const PLANS: Record<string, string> = { max: 'Max', pro: 'Pro', team: 'Team', enterprise: 'Enterprise', free: 'Free' };
+const planName = (p: string) => PLANS[p.toLowerCase()] ?? p;
+const accountOf = (name: string) => S.data?.accounts.find(a => a.name === name);
+// Who the account's CLI is signed in as, under its name
+function who(a: AccountView) {
+  if (a.login === 'logged-in') return h('div', { class: 'meta who' },
+    h('span', { class: 'email selectable', title: [a.email, a.org].filter(Boolean).join(' · ') || 'Signed in' }, a.email ?? 'Signed in'),
+    a.plan ? h('span', { class: 'tag' }, planName(a.plan)) : null);
+  return h('div', { class: 'meta' }, a.signingIn ? 'Waiting for sign-in…' : a.login === 'keychain?' ? (a.checking ? 'Checking sign-in…' : 'Sign-in unconfirmed') : 'Not signed in');
+}
 const MODE_META: Record<Mode, { icon: IconName; label: string; desc: string }> = {
   terminal: { icon: 'terminal', label: 'Terminal', desc: 'Native CLI with its own config dir' },
   docker: { icon: 'box', label: 'Docker', desc: 'Isolated container, separate login' },
@@ -61,9 +81,14 @@ const MODE_META: Record<Mode, { icon: IconName; label: string; desc: string }> =
 };
 
 // ------------------------------------------------------------------ data
-async function refresh(): Promise<void> {
-  try { S.data = await api.state(); } catch (e) { toast('bad', errText(e)); return; }
-  applyTheme(); render();
+async function refresh(fresh = false): Promise<boolean> {
+  try { S.data = await api.state(fresh); } catch (e) { toast('bad', errText(e)); return false; }
+  applyTheme(); render(); return true;
+}
+// Asks `claude auth status` again for every account. The window otherwise asks only when an answer is old.
+async function recheck(btn?: HTMLButtonElement) {
+  if (btn) { btn.disabled = true; btn.classList.add('busy'); }
+  try { if (await refresh(true)) toast('ok', 'Sign-in status refreshed'); } finally { if (btn) { btn.disabled = false; btn.classList.remove('busy'); } }
 }
 async function act(fn: () => Promise<unknown>, okMsg?: string): Promise<boolean> {
   try { await fn(); if (okMsg) toast('ok', okMsg); await refresh(); return true; }
@@ -74,6 +99,17 @@ async function launch(fn: () => Promise<Launch>): Promise<void> {
     const r = await fn();
     toast(r.ok ? 'ok' : 'warn', r.message, r.command);
   } catch (e) { toast('bad', errText(e)); }
+}
+// Opens a repository. One that opens with Claude Desktop shows the sign-in guide first when its account's window has
+// never opened.
+function openRepo(r: Row) {
+  const a = accountOf(r.account);
+  if (r.mode === 'desktop' && a?.desktopNew) desktopGuide(a, () => api.open(r.repo));
+  else launch(() => api.open(r.repo));
+}
+function openDesktop(a: AccountView) {
+  if (a.desktopNew) desktopGuide(a, () => api.desktop(a.name));
+  else launch(() => api.desktop(a.name));
 }
 async function copyText(text: string, what = 'Command') { try { await api.copy(text); toast('ok', `${what} copied`, text); } catch (e) { toast('bad', errText(e)); } }
 async function copyCmd(request: CommandRequest, what?: string) { try { await copyText(await api.command(request), what); } catch (e) { toast('bad', errText(e)); } }
@@ -106,7 +142,7 @@ function renderSidebar() {
     icon(ic, 16), h('span', { class: 'label' }, label), count !== undefined ? h('span', { class: 'count' }, count) : null);
   sb.replaceChildren(
     h('div', { class: 'sb-top drag' }, IS_MAC ? null : h('div', { class: 'sb-brand' }, logoMark(22), h('span', { class: 'name' }, 'Claude Accounts'))),
-    h('button', { class: 'sb-search', onclick: () => openPalette() }, icon('search', 14), h('span', {}, 'Search…'), kbd(MOD, 'K')),
+    h('button', { class: 'sb-search', onclick: () => openPalette() }, icon('search', 14), h('span', { class: 'label' }, 'Search…'), kbd(MOD, 'K')),
     h('div', { class: 'sb-scroll' },
       nav('repos', 'folder', 'Repositories', d.repos.length),
       nav('accounts', 'users', 'Accounts', d.accounts.length),
@@ -114,13 +150,13 @@ function renderSidebar() {
       h('div', { class: 'sb-section' }, 'Accounts',
         h('button', { class: 'btn ghost sm icon-only add', title: 'Add account', onclick: addAccountModal }, icon('plus', 14))),
       d.accounts.length ? d.accounts.map(a => h('button', {
-        class: `nav ${S.view === 'repos' && S.filter === a.name ? 'active' : ''}`, title: `Show repositories bound to ${a.name}`,
+        class: `nav ${S.view === 'repos' && S.filter === a.name ? 'active' : ''}`, title: `${a.email ? `${a.email}. ` : ''}Show repositories bound to ${a.name}`,
         onclick: () => { S.filter = a.name; go('repos'); },
       }, h('span', { class: `dot c${a.color % 8}` }), h('span', { class: 'label' }, a.name),
         h('span', { class: 'count' }, a.repoCount),
         h('span', { class: `status-dot ${LOGIN[a.login]?.[0] || ''}`, title: LOGIN[a.login]?.[1] }))) :
         h('div', { class: 'faint' }, h('div', { class: 'nav faint' }, 'No accounts yet'))),
-    h('div', { class: 'sb-foot', title: 'No network calls. Credential files are only checked for existence.' }, icon('shield', 14), 'Local only · no network'),
+    h('div', { class: 'sb-foot', title: 'No network calls. Credential files are never opened.' }, icon('shield', 14), 'Local only · no network'),
   );
 }
 
@@ -181,7 +217,8 @@ function repoList(repos: Row[]) {
 }
 function repoRow(r: Row, i: number) {
   const c = colorOf(r.account);
-  const accSel = h('div', { class: 'select-wrap chip' }, h('span', { class: `dot ${c}` }),
+  const email = accountOf(r.account)?.email;
+  const accSel = h('div', { class: 'select-wrap chip', title: email ? `${r.account}: ${email}` : r.account }, h('span', { class: `dot ${c}` }),
     h('select', { title: 'Account', onchange: e => { const v = (e.target as HTMLSelectElement).value; act(() => api.bind(r.repo, v, r.mode), `${r.name} → ${v}`); } },
       data().accounts.map(a => { const o = h('option', { value: a.name }, a.name); o.selected = a.name === r.account; return o; })),
     icon('chevronDown', 13, 'chev'));
@@ -191,12 +228,12 @@ function repoRow(r: Row, i: number) {
     icon('chevronDown', 13, 'chev'));
   const more = h('button', { class: 'btn ghost sm icon-only', title: 'More actions' }, icon('more', 16));
   more.addEventListener('click', e => { e.stopPropagation(); repoMenu(r, more); });
-  const row = h('div', { class: `row ${S.sel === i ? 'sel' : ''}`, 'data-i': i, ondblclick: () => launch(() => api.open(r.repo)), onclick: () => selectRow(i) },
+  const row = h('div', { class: `row ${S.sel === i ? 'sel' : ''}`, 'data-i': i, ondblclick: () => openRepo(r), onclick: () => selectRow(i) },
     h('div', { class: 'repo-cell' }, h('div', { class: `avatar ${c}` }, initials(r.name)),
       h('div', { class: 'repo-text' }, h('div', { class: 'repo-name' }, r.name, r.exists ? null : h('span', { class: 'tag warn' }, 'MISSING')), pathEl(r.repo))),
     h('div', {}, accSel), h('div', {}, seg), h('div', {}, loginBadge(r.login)),
     h('div', { class: 'row-actions' }, more,
-      h('button', { class: 'btn sm', onclick: e => { e.stopPropagation(); launch(() => api.open(r.repo)); }, title: r.command },
+      h('button', { class: 'btn sm', onclick: e => { e.stopPropagation(); openRepo(r); }, title: r.command },
         icon(r.mode === 'desktop' ? 'monitor' : 'play', 12), 'Open')));
   return row;
 }
@@ -207,10 +244,10 @@ function selectRow(i: number) {
 }
 function repoMenu(r: Row, anchor: HTMLElement) {
   menu(anchor, [
-    ['play', 'Open (' + MODE_META[r.mode].label + ')', () => launch(() => api.open(r.repo)), '↵'],
+    ['play', 'Open (' + MODE_META[r.mode].label + ')', () => openRepo(r), '↵'],
     ['terminal', 'Open in Terminal', () => launch(() => api.openTerminal(r.repo))],
     ['branch', 'Open in new worktree…', () => worktreeModal(r)],
-    ['monitor', 'Launch Desktop instance', () => launch(() => api.desktop(r.account))],
+    ['monitor', 'Launch Desktop instance', () => { const a = accountOf(r.account); if (a) openDesktop(a); }],
     ['box', 'Run in Docker', () => launch(() => api.openDocker(r.repo, 'docker'))],
     IS_MAC ? ['layers', 'Run in Apple container', () => launch(() => api.openDocker(r.repo, 'container'))] : null,
     '-',
@@ -227,13 +264,15 @@ function repoMenu(r: Row, anchor: HTMLElement) {
 // ------------------------------------------------------------------ accounts
 function renderAccounts() {
   const d = data();
-  const head = header('Accounts', d.accounts.length ? `${d.accounts.length} configured` : null,
-    h('button', { class: 'btn', onclick: () => refresh().then(() => toast('ok', 'Status refreshed')) }, icon('refresh', 14), 'Refresh'),
+  const again: HTMLButtonElement = h('button', { class: 'btn', title: 'Asks claude auth status again for every account', onclick: () => recheck(again) }, icon('refresh', 14), 'Refresh');
+  const head = header('Accounts', d.accounts.length ? `${d.accounts.length} configured` : null, again,
     h('button', { class: 'btn primary', onclick: addAccountModal }, icon('userPlus', 14), 'Add account'));
   const cards = d.accounts.map(a => {
-    const c = `c${a.color % 8}`, deep = S.deep.get(a.name);
+    const c = `c${a.color % 8}`, repos = d.repos.filter(r => r.account === a.name).map(r => r.name);
     const more = h('button', { class: 'btn ghost sm icon-only', title: 'More' }, icon('more', 16));
     more.addEventListener('click', e => { e.stopPropagation(); menu(more, [
+      ['pencil', 'Rename…', () => renameModal(a.name)],
+      ['monitor', 'Sign in to Claude Desktop…', () => desktopGuide(a, () => api.desktop(a.name))],
       ['copy', 'Copy sign-in command', () => copyText(a.login_cmd)],
       ['copy', 'Copy Desktop command', () => copyText(a.desktop_cmd)],
       ['copy', 'Copy config dir path', () => copyText(a.config_dir, 'Path')],
@@ -245,16 +284,17 @@ function renderAccounts() {
     const loggedIn = a.login === 'logged-in';
     return h('div', { class: 'card' },
       h('div', { class: 'card-head' }, h('div', { class: `avatar round lg ${c}` }, initials(a.name)),
-        h('div', {}, h('div', { class: 'title' }, a.name), h('div', { class: 'meta' }, `${a.repoCount} ${a.repoCount === 1 ? 'repository' : 'repositories'}`)), more),
+        h('div', { class: 'card-id' }, h('div', { class: 'title' }, a.name), who(a)), more),
       h('div', { class: 'kv' },
-        h('span', { class: 'k' }, 'CLI'), h('div', {}, loginBadge(a.login)),
+        h('span', { class: 'k' }, 'CLI'), h('div', {}, accountBadge(a)),
         h('span', { class: 'k' }, 'Container'), h('div', {}, loginBadge(a.docker_login)),
+        h('span', { class: 'k' }, 'Repositories'), h('div', { class: 'v', title: repos.join(', ') },
+          repos.length ? (repos.length > 3 ? `${repos.slice(0, 3).join(', ')} +${repos.length - 3}` : repos.join(', ')) : h('span', { class: 'faint' }, 'None yet')),
         h('span', { class: 'k' }, 'Config dir'), pathEl(a.config_dir, 'path', 40)),
-      deep ? h('div', { class: 'deep' }, deep === '…' ? icon('refresh', 13, 'spin') : icon('activity', 13), h('span', { class: 'selectable' }, deep === '…' ? 'Asking claude auth status…' : deep)) : null,
+      a.signingIn && !loggedIn ? h('div', { class: 'deep' }, icon('info', 13), h('span', {}, 'Finish the sign-in in your browser. This card updates by itself.')) : null,
       h('div', { class: 'card-foot' },
         h('button', { class: `btn sm ${loggedIn ? '' : 'outline-accent'}`, onclick: () => launch(() => api.login(a.name)) }, icon('logIn', 13), loggedIn ? 'Re-sign in' : 'Sign in'),
-        h('button', { class: 'btn sm', onclick: () => launch(() => api.desktop(a.name)) }, icon('monitor', 13), 'Desktop'),
-        h('button', { class: 'btn sm ghost', title: 'Runs `claude auth status` locally (prints status, never the token)', onclick: () => deepCheck(a.name) }, icon('activity', 13), 'Check status')));
+        h('button', { class: 'btn sm', title: 'Opens this account’s own Claude Desktop window', onclick: () => openDesktop(a) }, icon('monitor', 13), 'Desktop')));
   });
   const content = d.accounts.length ? h('div', { class: 'grid' }, cards,
     h('button', { class: 'card add', onclick: addAccountModal }, h('div', { class: 'ring' }, icon('plus', 18)), 'Add account'))
@@ -262,13 +302,6 @@ function renderAccounts() {
       h('p', {}, 'Each account gets its own private config folder, so logins never mix.'), h('button', { class: 'btn primary lg', onclick: addAccountModal }, icon('userPlus', 15), 'Add account'));
   return [head, h('div', { class: 'content' }, content)];
 }
-async function deepCheck(name: string) {
-  S.deep.set(name, '…'); render();
-  try { S.deep.set(name, await api.deepStatus(name)); } catch (e) { S.deep.set(name, errText(e)); }
-  render();
-}
-
-// ------------------------------------------------------------------ settings
 function renderSettings() {
   const d = data(), p = d.prefs;
   const setting = (t: string, desc: string | null, control: Kid) => h('div', { class: 'setting' }, h('div', { class: 'txt' }, h('div', { class: 't' }, t), desc ? h('div', { class: 'd' }, desc) : null), control);
@@ -279,8 +312,9 @@ function renderSettings() {
   const cli = h('div', { class: 'setting' }, h('div', { class: 'txt' }, h('div', { class: 't' }, 'Command-line tool'), h('div', { class: 'd', id: 'cli-status' }, 'Checking…')));
   api.cliStatus().then(st => {
     const el = document.getElementById('cli-status'); if (!el) return;
-    el.textContent = st.installed ? `Installed at ${st.path}${st.onPath ? '' : ' (add ~/.local/bin to PATH)'}` : 'Installs the bundled `ca` script (needs python3) to ~/.local/bin. Same config as this app.';
-    cli.append(h('button', { class: 'btn sm', onclick: () => act(() => api.installCli(), 'Command-line tool installed') }, icon('terminal', 13), st.installed ? 'Reinstall' : 'Install `ca`'));
+    el.textContent = st.installed ? `Installed at ${tilde(st.path)}${st.onPath ? '' : ' (add ~/.local/bin to PATH)'}`
+      : st.outdated ? `An older \`ca\` is at ${tilde(st.path)}. Update replaces it with this version.` : 'Installs the bundled `ca` command to ~/.local/bin. Same config as this app.';
+    cli.append(h('button', { class: 'btn sm', onclick: () => act(() => api.installCli(), 'Command-line tool installed') }, icon('terminal', 13), st.installed ? 'Reinstall' : st.outdated ? 'Update `ca`' : 'Install `ca`'));
   }).catch(() => {});
   return [header('Settings'), h('div', { class: 'content' }, h('div', { class: 'settings' },
     h('div', { class: 'group' }, h('h2', {}, 'Appearance'), h('p', {}, 'Designed dark-first. “System” follows your OS appearance.'),
@@ -301,8 +335,7 @@ function renderSettings() {
     h('div', { class: 'group' }, h('h2', {}, 'Privacy & safety'),
       h('div', { class: 'panel' }, h('ul', { class: 'bullets' },
         ['No network access and no telemetry. The app only loads its own bundled files.',
-         'Login status checks only whether a credentials file exists. Its contents are never opened, shown or sent.',
-         'On macOS the token lives in the Keychain, so status shows “Keychain?” until you run Check status (`claude auth status`).',
+         'Credential files are never opened, shown or sent. Sign-in status comes from whether they exist and from `claude auth status`, which reports the email and plan, never the token.',
          'ANTHROPIC_API_KEY is removed from every launch so the subscription login is used.',
          'Account folders are created private (0700).'].map(t => h('li', {}, icon('check', 14), t))))),
     h('div', { class: 'group' }, h('h2', {}, 'About'), h('div', { class: 'panel' },
@@ -339,12 +372,18 @@ function renderOnboarding(): HTMLElement[] {
       h('button', { class: 'btn primary', onclick: next }, 'Continue', icon('arrowRight', 14))));
     setTimeout(() => inp.focus(), 30);
   } else if (o.step === 1) {
+    const signedIn = a.login === 'logged-in', next = () => { o.step = 2; render(); };
+    const status = signedIn ? h('div', { class: 'onb-status ok' }, icon('checkCircle', 15),
+        h('span', {}, 'Signed in', a.email ? [' as ', h('strong', { class: 'selectable' }, a.email)] : null, a.plan ? ` (${planName(a.plan)})` : null))
+      : a.signingIn ? h('div', { class: 'onb-status' }, icon('refresh', 15, 'spin'), h('span', {}, 'Waiting for the sign-in to finish in your browser…'))
+      : null;
     body = h('div', { class: 'onb-body' }, h('h3', {}, `Sign in to “${a.name}”`),
       h('p', {}, 'This opens a terminal running the official `claude auth login` with this account’s folder. Finish the sign-in in your browser.'),
       h('div', { class: 'codebox wrap' }, h('code', { title: a.login_cmd }, a.login_cmd.split(d.home).join('~')), h('button', { class: 'btn ghost sm icon-only', title: 'Copy', onclick: () => copyText(a.login_cmd) }, icon('copy', 13))),
-      h('div', { class: 'onb-actions' }, h('button', { class: 'btn ghost', onclick: () => { o.step = 2; render(); } }, 'Skip for now'),
-        h('div', { class: 'row-actions' }, h('button', { class: 'btn', onclick: () => launch(() => api.login(a.name)) }, icon('terminal', 14), 'Open sign-in'),
-          h('button', { class: 'btn primary', onclick: () => { o.step = 2; render(); } }, 'I’m signed in', icon('arrowRight', 14)))));
+      status,
+      h('div', { class: 'onb-actions' }, signedIn ? h('span') : h('button', { class: 'btn ghost', onclick: next }, 'Skip for now'),
+        h('div', { class: 'row-actions' }, h('button', { class: 'btn', onclick: () => launch(() => api.login(a.name)) }, icon('terminal', 14), signedIn ? 'Sign in again' : 'Open sign-in'),
+          h('button', { class: 'btn primary', onclick: next }, signedIn ? 'Continue' : 'I’m signed in', icon('arrowRight', 14)))));
   } else {
     const name = a.name, repo = o.repo;
     o.mode = o.mode || 'terminal';
@@ -394,6 +433,41 @@ function addAccountModal() {
     h('div', { class: 'field' }, h('label', {}, 'Name'), inp, err)],
     [h('button', { class: 'btn', onclick: closeOverlay }, 'Cancel'), h('button', { class: 'btn primary', onclick: save }, 'Add account')]);
   setTimeout(() => inp.focus(), 20);
+}
+function renameModal(name: string) {
+  const inp = h('input', { class: 'input', value: name, onkeydown: e => e.key === 'Enter' && save() });
+  const err = h('div', { class: 'error-text' });
+  const save = async () => {
+    const next = inp.value.trim();
+    if (next === name) { closeOverlay(); return; }
+    try {
+      await api.renameAccount(name, next);
+      closeOverlay();
+      if (S.filter === name) S.filter = next;
+      if (S.onb?.account === name) S.onb.account = next;
+      toast('ok', `“${name}” is now “${next}”`);
+      await refresh();
+    } catch (e) { err.textContent = errText(e); }
+  };
+  modal('Rename account', 'pencil', [h('p', {}, `Repositories bound to “${name}” move with it. Its folders stay where they are, so it stays signed in.`),
+    h('div', { class: 'field' }, h('label', {}, 'Name'), inp, err)],
+    [h('button', { class: 'btn', onclick: closeOverlay }, 'Cancel'), h('button', { class: 'btn primary', onclick: save }, 'Rename')]);
+  setTimeout(() => { inp.focus(); inp.select(); }, 20);
+}
+// Each account's Claude Desktop window signs in once and keeps it in its own folder. A sign-in that finishes in the
+// browser comes back as a claude:// link, and macOS hands that to the Claude that was open first: Desktop drops a
+// Google sign-in that window didn't start, and the email's link can sign that window in instead. The code from the
+// email, typed in the account's window, never leaves it.
+function desktopGuide(a: AccountView, run: () => Promise<Launch>) {
+  const open = () => { closeOverlay(); launch(run); };
+  modal(`Claude Desktop for “${a.name}”`, 'monitor', [
+    h('p', {}, 'This account has its own Claude Desktop window. Sign in to it once, and it stays signed in.'),
+    h('ol', { class: 'guide-steps' },
+      h('li', {}, 'Open the window with the button below.'),
+      h('li', {}, 'Choose ', h('strong', {}, 'Continue with email'), ' and enter ', a.email ? h('strong', { class: 'selectable' }, a.email) : 'this account’s email', '.'),
+      h('li', {}, 'Type the code from the email into that window. Don’t click the link in the email.')),
+    h('p', { class: 'guide-note' }, 'A sign-in that finishes in your browser, like Continue with Google or the email’s link, goes back to the Claude that was open first, not to this window. To sign in with Google, quit your other Claude windows first.')],
+    [h('button', { class: 'btn', onclick: closeOverlay }, 'Cancel'), h('button', { class: 'btn primary', onclick: open }, icon('monitor', 14), 'Open Claude Desktop')]);
 }
 function bindModal() {
   const d = S.data;
@@ -456,14 +530,16 @@ function paletteItems(): PaletteItem[] {
   const d = data(), items: PaletteItem[] = [];
   for (const r of d.repos) {
     const meta = MODE_META[r.mode];
-    items.push({ group: 'Repositories', icon: r.mode === 'desktop' ? 'monitor' : 'play', label: `Open ${r.name}`, sub: meta.label, account: r.account, run: () => launch(() => api.open(r.repo)), keys: `${r.name} ${r.repo} open ${r.account}` });
+    items.push({ group: 'Repositories', icon: r.mode === 'desktop' ? 'monitor' : 'play', label: `Open ${r.name}`, sub: meta.label, account: r.account, run: () => openRepo(r), keys: `${r.name} ${r.repo} open ${r.account}` });
     if (r.mode !== 'terminal') items.push({ group: 'Repositories', icon: 'terminal', label: `Open ${r.name} in Terminal`, account: r.account, run: () => launch(() => api.openTerminal(r.repo)), keys: `${r.name} terminal ${r.account}` });
   }
   for (const r of d.repos) items.push({ group: 'Copy', icon: 'copy', label: `Copy command for ${r.name}`, account: r.account, run: () => copyCmd({ kind: 'open', repo: r.repo }), keys: `${r.name} copy command ${r.account}` });
   for (const a of d.accounts) {
-    items.push({ group: 'Accounts', icon: 'monitor', label: `Open Desktop instance`, sub: a.name, account: a.name, run: () => launch(() => api.desktop(a.name)), keys: `desktop ${a.name}` });
-    items.push({ group: 'Accounts', icon: 'logIn', label: `Sign in`, sub: a.name, account: a.name, run: () => launch(() => api.login(a.name)), keys: `login sign in ${a.name}` });
-    items.push({ group: 'Accounts', icon: 'activity', label: `Check status`, sub: a.name, account: a.name, run: () => { go('accounts'); deepCheck(a.name); }, keys: `status check auth ${a.name}` });
+    const id = `${a.name} ${a.email ?? ''}`;
+    items.push({ group: 'Accounts', icon: 'monitor', label: `Open Desktop instance`, sub: a.name, account: a.name, run: () => openDesktop(a), keys: `desktop ${id}` });
+    items.push({ group: 'Accounts', icon: 'monitor', label: `Sign in to Claude Desktop…`, sub: a.name, account: a.name, run: () => desktopGuide(a, () => api.desktop(a.name)), keys: `desktop sign in login ${id}` });
+    items.push({ group: 'Accounts', icon: 'logIn', label: `Sign in`, sub: a.name, account: a.name, run: () => launch(() => api.login(a.name)), keys: `login sign in ${id}` });
+    items.push({ group: 'Accounts', icon: 'pencil', label: `Rename account…`, sub: a.name, account: a.name, run: () => renameModal(a.name), keys: `rename account ${id}` });
   }
   items.push(
     { group: 'General', icon: 'link', label: 'Bind repository…', hint: [MOD, 'N'], run: bindModal, keys: 'bind add repository new' },
@@ -471,16 +547,22 @@ function paletteItems(): PaletteItem[] {
     { group: 'General', icon: 'folder', label: 'Go to Repositories', hint: [MOD, '1'], run: () => go('repos'), keys: 'repositories view' },
     { group: 'General', icon: 'users', label: 'Go to Accounts', hint: [MOD, '2'], run: () => go('accounts'), keys: 'accounts view' },
     { group: 'General', icon: 'settings', label: 'Settings', hint: [MOD, ','], run: () => go('settings'), keys: 'settings preferences' },
+    { group: 'General', icon: 'refresh', label: 'Refresh sign-in status', hint: [MOD, 'R'], run: () => recheck(), keys: 'refresh status sign in check auth' },
     { group: 'General', icon: d.prefs.theme === 'light' ? 'moon' : 'sun', label: 'Toggle light / dark', run: () => act(() => api.setPrefs({ theme: document.documentElement.classList.contains('light') ? 'dark' : 'light' })), keys: 'theme dark light appearance' },
   );
   return items;
 }
+// How well a palette item matches, 0 for not at all: the whole query in its text ranks first, then every word of the
+// query somewhere in it ("rename work"), then the query's letters in order. Within a tier, an earlier match wins.
 function fuzzy(q: string, s: string): number {
-  q = q.toLowerCase(); s = s.toLowerCase();
+  q = q.toLowerCase().trim(); s = s.toLowerCase();
   if (!q) return 1;
-  if (s.includes(q)) return 100 - s.indexOf(q);
-  let i = 0, score = 0;
-  for (const c of s) { if (c === q[i]) { i++; score++; } if (i === q.length) return score; }
+  const at = s.indexOf(q);
+  if (at >= 0) return 3 + 1 / (1 + at);
+  const words = q.split(/\s+/);
+  if (words.every(w => s.includes(w))) return 2 + 1 / (1 + words.reduce((n, w) => n + s.indexOf(w), 0));
+  let i = 0;
+  for (const c of s) if (c === q[i] && ++i === q.length) return 1;
   return 0;
 }
 function openPalette(initial = '') {
@@ -532,24 +614,30 @@ document.addEventListener('keydown', e => {
   if (mod && e.shiftKey && e.key.toLowerCase() === 'n') { e.preventDefault(); addAccountModal(); return; }
   if (mod && (e.key === '1' || e.key === '2' || e.key === '3')) { e.preventDefault(); go((['repos', 'accounts', 'settings'] as const)[Number(e.key) - 1]!); return; }
   if (mod && e.key === ',') { e.preventDefault(); go('settings'); return; }
-  if (mod && e.key.toLowerCase() === 'r') { e.preventDefault(); refresh().then(() => toast('ok', 'Status refreshed')); return; }
+  if (mod && e.key.toLowerCase() === 'r') { e.preventDefault(); recheck(); return; }
   if (typing || S.view !== 'repos') return;
   const repos = visibleRepos(), current = repos[S.sel];
   if (e.key === '/') { e.preventDefault(); document.getElementById('repo-filter')?.focus(); }
   else if (e.key === 'ArrowDown' || e.key === 'j') { e.preventDefault(); selectRow(Math.min(S.sel + 1, repos.length - 1)); }
   else if (e.key === 'ArrowUp' || e.key === 'k') { e.preventDefault(); selectRow(Math.max(S.sel - 1, 0)); }
-  else if (e.key === 'Enter' && current && !menuEl) { e.preventDefault(); launch(() => api.open(current.repo)); }
+  else if (e.key === 'Enter' && current && !menuEl) { e.preventDefault(); openRepo(current); }
   else if (mod && e.shiftKey && e.key.toLowerCase() === 'c' && current) { e.preventDefault(); copyCmd({ kind: 'open', repo: current.repo }); }
 });
 
 api.onEvent(ev => {
   switch (ev.type) {
-    case 'state-changed': case 'refresh': refresh(); break;
+    case 'state-changed': refresh(); break;
+    case 'refresh': recheck(); break;
     case 'toast': toast(ev.ok ? 'ok' : 'warn', ev.message, ev.command); break;
     case 'nav': go(ev.view); break;
     case 'palette': openPalette(); break;
     case 'bind': bindModal(); break;
     case 'add-account': addAccountModal(); break;
+    case 'desktop-guide': {
+      const { account, repo } = ev;
+      void refresh().then(() => { const a = accountOf(account); if (a) desktopGuide(a, () => repo ? api.open(repo) : api.desktop(account)); });
+      break;
+    }
   }
 });
 window.addEventListener('focus', () => refresh());

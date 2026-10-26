@@ -36,6 +36,45 @@ class T(unittest.TestCase):
         self.assertEqual(cfg["repos"][os.path.realpath(self.r1)], {"account": "work", "mode": "terminal"})
         self.assertEqual(cfg["repos"][os.path.realpath(self.r2)]["mode"], "docker")
 
+    def test_add_account_folders(self):
+        # adding an account that exists keeps its folders, and its sign-in
+        before = ca.load()["accounts"]["work"]
+        self.assertEqual(sh("add-account", "work").returncode, 0)
+        self.assertEqual(ca.load()["accounts"]["work"], before)
+        # a new account skips a folder that a removed or renamed account left behind
+        os.makedirs(os.path.join(ca.BASE_DIR, "accounts", "leftover", "claude"))
+        try:
+            self.assertEqual(sh("add-account", "leftover").returncode, 0)
+            acc = ca.load()["accounts"]["leftover"]
+            self.assertEqual(os.path.basename(os.path.dirname(acc["config_dir"])), "leftover-2")
+        finally:
+            cfg = ca.load(); cfg["accounts"].pop("leftover", None); ca.save(cfg)
+
+    def test_direnv_write(self):
+        envrc = os.path.join(os.path.realpath(self.r1), ".envrc")   # ca prints real paths
+        try:
+            r = sh("shell-hook", "direnv", self.r1, "--write")
+            self.assertEqual(r.returncode, 0); self.assertTrue(r.stdout.startswith(f"created {envrc}; run: direnv allow "))
+            # direnv allow approves the whole file, so a file that was already there gets read first
+            r = sh("shell-hook", "direnv", self.r1, "--write")
+            self.assertIn("which was already there", r.stdout); self.assertIn("read it first, then run: direnv allow ", r.stdout)
+            line = sh("shell-hook", "direnv", self.r1).stdout
+            self.assertEqual(read(envrc), line + line)
+        finally:
+            if os.path.exists(envrc): os.remove(envrc)
+
+    @unittest.skipIf(WIN, "symbolic links need extra rights on Windows")
+    def test_direnv_write_leaves_a_link_alone(self):
+        # a repository's .envrc that links to a file of yours
+        yours, link = os.path.join(TMP, "zshrc"), os.path.join(self.r2, ".envrc")
+        write(yours, "# mine\n"); os.symlink(yours, link)
+        try:
+            r = sh("shell-hook", "direnv", self.r2, "--write")
+            self.assertNotEqual(r.returncode, 0); self.assertIn("is a symbolic link, so ca won't write to it", r.stderr)
+            self.assertEqual(read(yours), "# mine\n")
+        finally:
+            os.remove(link); os.remove(yours)
+
     def test_bind_errors(self):
         self.assertNotEqual(sh("bind", self.r1, "nope").returncode, 0)
         self.assertNotEqual(sh("bind", "/does/not/exist", "work").returncode, 0)

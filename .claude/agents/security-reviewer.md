@@ -15,7 +15,8 @@ only to read (`git diff`, `git log`, `git show`, `grep`) and to run the test sui
    - **Credentials:**
      - reads of `.credentials.json`, `.claude.json`, the Keychain (`security find-generic-password`) or tokens;
      - logging or copying them;
-     - using more than the first line of `claude auth status`;
+     - keeping anything from `claude auth status` beyond `loggedIn`, `email`, `subscriptionType` and `orgName`
+       (`parseAuthStatus` picks them), or showing its raw output;
      - errors that could echo a file's contents.
    - **Network:**
      - `fetch`, `http`/`https`/`net`/`tls`/`dns`, WebSocket, EventSource, `sendBeacon`;
@@ -23,7 +24,12 @@ only to read (`git diff`, `git log`, `git show`, `grep`) and to run the test sui
      - changes to the CSP or to the `webRequest` filter;
      - new dependencies with install scripts or telemetry (read their `package.json`). esbuild bundles what the
        main process imports, so a new runtime import ships inside the app;
-     - listening sockets in the CLI.
+     - listening sockets in the CLI;
+     - a `claude` run nobody asked for without `QUIET` (`authStatus`), or run more often than at start-up, when an
+       account's folder first gets files, on Refresh and while a sign-in is pending;
+     - a Bun executable that can start without `DO_NOT_TRACK=1`: the installed `ca` must stay the `cliWrapper`
+       script, and the shell hook must call that script (`selfCommand()`). Bun uploads crash reports by default on
+       macOS, and setting the variable from inside the program is too late.
    - **API key:** every new spawn of `claude`, or of anything that runs it, goes through `claudeEnv` / `claude_env` or
      `withoutVars()`, which drop `ANTHROPIC_API_KEY` in any letter case. `delete env.ANTHROPIC_API_KEY` misses
      `anthropic_api_key`, which Windows reads all the same.
@@ -34,7 +40,8 @@ only to read (`git diff`, `git log`, `git show`, `grep`) and to run the test sui
      - Windows lines that skip `cmdSafe`;
      - a program found by name in a folder that isn't ours: bare `cmd.exe` in a spawn, a console started in the
        repository, `shutil.which()` in the CLI, a child without `child_env()` (npm's `claude.cmd` runs `node` by
-       name), a PATH entry without a drive (`.`, `\tools`);
+       name), a PATH entry without a drive (`.`, `\tools`), or a CLI child whose PATH keeps relative entries
+       (`ENV` in `cli/ca.ts` keeps only `posixDirs`; npm's `claude` runs `env node`);
      - a typed or copied command that skips `V.typeable` (control characters act before the shell parses quotes);
      - paths, names or worktree names that reach a command line instead of argv, cwd or env. Folder names can hold
        `& ; | $ \` ' " ^ % ( )` and newlines.

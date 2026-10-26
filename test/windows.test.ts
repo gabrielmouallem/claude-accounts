@@ -169,10 +169,10 @@ test('Deep status asks claude as the account, whatever folder the app is in', { 
   fs.rmSync(LOG, { force: true });
   const here = process.cwd();
   process.chdir(REPO);
-  try { assert.equal(await ca.deepStatus(acc, { env: env() }), 'exit 0'); } finally { process.chdir(here); }
+  try { assert.equal((await ca.authStatus(acc, { env: env() })).note, 'exit 0'); } finally { process.chdir(here); }
   const all = calls(); nonePlanted(all);
   const [c] = first(all, 1) as [Call];
-  assert.deepEqual([c.argv, real(c.cwd), c.config, c.key], [['claude', 'auth', 'status', '--text'], real(ca.launchDir()), acc.config_dir, null]);
+  assert.deepEqual([c.argv, real(c.cwd), c.config, c.key], [['claude', 'auth', 'status'], real(ca.launchDir()), acc.config_dir, null]);
 });
 
 test('CLI: ca run starts claude in the repository and ca login signs in from home, as the account', { skip: (!WIN && 'Windows only') || (!PY && 'python missing') }, () => {

@@ -9,7 +9,7 @@ import { pathToFileURL } from 'node:url';
 import { execFile, spawn, type ExecFileOptions } from 'node:child_process';
 import * as ca from './core.ts';
 import * as V from './validate.ts';
-import type { Account, AppEvent, Channel, CliStatus, Config, Engine, Launch, Prefs, Results, State } from './types.ts';
+import type { Account, AppEvent, AuthStatus, Channel, CliStatus, Config, Engine, Launch, LoginState, Prefs, Results, State } from './types.ts';
 
 const IS_MAC = process.platform === 'darwin', IS_WIN = process.platform === 'win32';
 const PREVIEW = process.env.CA_PREVIEW_PLATFORM || '';        // screenshot mode on Linux: renders the macOS layout
@@ -21,6 +21,7 @@ app.setName('Claude Accounts');
 if (!app.requestSingleInstanceLock()) { app.quit(); }
 
 let win: BrowserWindow | null = null, tray: Tray | null = null, userPath = process.env.PATH || '';
+let userPathReady: Promise<void> = Promise.resolve();
 
 // ---------------------------------------------------------------- environment
 // GUI apps on macOS get a minimal PATH; ask the login shell once so `claude` is found.
@@ -59,15 +60,88 @@ function setPrefs(patch: Partial<Prefs>): Prefs {
 function state(): State {
   const cfg = ca.load();
   const names = Object.keys(cfg.accounts).sort();
-  const repos = ca.rows(cfg);
+  const rows = ca.rows(cfg);
   const accounts = names.map((n, i) => {
-    const a = cfg.accounts[n]!;
+    const a = cfg.accounts[n]!, login = signIn(a), known = auth.get(a.config_dir);
+    // who it is signed in as means something only while it is signed in
+    const who = login === 'logged-in' ? known : undefined;
     return { name: n, color: i, config_dir: a.config_dir, desktop_user_data_dir: a.desktop_user_data_dir, docker_config_dir: a.docker_config_dir,
-             login: ca.loginState(a), docker_login: ca.dockerLoginState(a), repoCount: repos.filter(r => r.account === n).length,
-             desktop_cmd: ca.desktopCmd(a), login_cmd: ca.loginCmd(a) };
+             login, docker_login: ca.dockerLoginState(a), repoCount: rows.filter(r => r.account === n).length,
+             desktop_cmd: ca.desktopCmd(a), login_cmd: ca.loginCmd(a),
+             email: who?.email ?? null, plan: who?.plan ?? null, org: who?.org ?? null, note: known && !known.state ? known.note : null,
+             checking: asking.has(a.config_dir), signingIn: signingIn.has(a.config_dir), desktopNew: ca.desktopNeverOpened(a) };
   });
+  const loginBy = new Map(accounts.map(a => [a.name, a.login]));
+  const repos = rows.map(r => r.login === 'keychain?' ? { ...r, login: loginBy.get(r.account) ?? r.login } : r);
   return { accounts, repos, configPath: ca.configPath(), system: ca.SYSTEM, previewPlatform: PREVIEW, prefs: getPrefs(),
            launchDisabled: LAUNCH_DISABLED, version: app.getVersion(), home: os.homedir() };
+}
+
+// ---------------------------------------------------------------- sign-in status
+// An account's folder tells only part of it: on macOS the token lives in the Keychain, and Claude Code writes
+// .claude.json before a sign-in finishes. So the app asks `claude auth status` about each account with files, which
+// prints the email and plan and never the token (see ca.authStatus). It asks once per folder that has files (at
+// start-up, or when a folder first gets them), then again only on Refresh, and every few seconds while it waits for a
+// sign-in it opened, until the account is signed in as someone new.
+const SIGN_IN_POLL = 3_000, SIGN_IN_WAIT = 5 * 60_000;
+const auth = new Map<string, AuthStatus>();   // by config_dir, which a rename keeps
+const asking = new Map<string, Promise<AuthStatus>>();
+const signingIn = new Map<string, number>();                         // config_dir -> when to stop waiting
+// The window refreshes when the answer is new or different.
+function ask(acc: Account): Promise<AuthStatus> {
+  const dir = acc.config_dir;
+  let p = asking.get(dir);
+  if (!p) {
+    // claude is found on the login shell's PATH, which takes a moment to read when the app starts
+    p = userPathReady.then(() => ca.authStatus(acc, { env: baseEnv() }))
+      .catch((e: unknown): AuthStatus => ({ state: null, email: null, plan: null, org: null, note: `error: ${e instanceof Error ? e.message : String(e)}` }))
+      .then(status => {
+        const before = auth.get(dir);
+        auth.set(dir, status);
+        asking.delete(dir);
+        if (JSON.stringify(before) !== JSON.stringify(status)) event({ type: 'state-changed' });
+        return status;
+      });
+    asking.set(dir, p);
+  }
+  return p;
+}
+// An account's sign-in state: the last answer when there is one, or else what its folder shows while the first
+// answer comes. A folder with no files has never been signed in.
+function signIn(acc: Account): LoginState {
+  const s = ca.loginState(acc);
+  if (s === 'not-logged-in' || LAUNCH_DISABLED) return s;
+  const known = auth.get(acc.config_dir);
+  if (!known) void ask(acc);
+  return known?.state ?? s;
+}
+// Every account with files, asked again now, for a refresh someone asked for
+async function askAll(): Promise<void> {
+  if (LAUNCH_DISABLED) return;
+  await Promise.all(Object.values(ca.load().accounts).filter(a => ca.loginState(a) !== 'not-logged-in').map(ask));
+}
+// Waits for a sign-in the app opened, so the account shows who it is signed in as without a refresh. A first
+// sign-in, or one as another email, ends the wait; one as the same email reads the same, so it runs to the limit.
+function watchSignIn(acc: Account): void {
+  const dir = acc.config_dir, was = auth.get(dir);
+  const running = signingIn.has(dir);
+  signingIn.set(dir, Date.now() + SIGN_IN_WAIT);
+  event({ type: 'state-changed' });
+  if (running) return;   // the loop below picks up the new limit
+  const tick = async () => {
+    const now = await ask(acc);
+    const done = now.state === 'logged-in' && (was?.state !== 'logged-in' || now.email !== was.email);
+    if (!done && Date.now() < (signingIn.get(dir) ?? 0)) { setTimeout(tick, SIGN_IN_POLL); return; }
+    signingIn.delete(dir);
+    event({ type: 'state-changed' });
+    const name = accountNamed(dir);
+    if (done && name) event({ type: 'toast', ok: true, message: `“${name}” is signed in${now.email ? ` as ${now.email}` : ''}` });
+  };
+  setTimeout(tick, SIGN_IN_POLL);
+}
+// The account's name now: it may have been renamed since
+function accountNamed(configDir: string): string | undefined {
+  try { return Object.entries(ca.load().accounts).find(([, a]) => a.config_dir === configDir)?.[0]; } catch { return undefined; }
 }
 
 // ---------------------------------------------------------------- launching
@@ -88,7 +162,12 @@ async function openTerminal(command: string, windows: () => ca.WinLaunch): Promi
     // The command reaches AppleScript as an argument (argv), so it is never escaped into the script's text.
     const script = iterm
       ? ['tell application "iTerm"', 'activate', 'set w to (create window with default profile)', 'tell current session of w to write text (item 1 of argv)', 'end tell']
-      : ['tell application "Terminal"', 'do script (item 1 of argv)', 'activate', 'end tell'];
+      // Terminal opens a window of its own when it starts. A Terminal that wasn't running gets the command there,
+      // instead of in a second window, unless it opened several (restored windows, a window group) or that one is
+      // already running something, which a profile can start (ssh, tmux).
+      : ['set wasRunning to application "Terminal" is running', 'tell application "Terminal"', 'if not wasRunning then reopen',
+         'if not wasRunning and (count of windows) is 1 and not (busy of selected tab of window 1) then',
+         'do script (item 1 of argv) in window 1', 'else', 'do script (item 1 of argv)', 'end if', 'activate', 'end tell'];
     const r = await run('osascript', ['-e', 'on run argv', ...script.flatMap(l => ['-e', l]), '-e', 'end run', command]);
     return r.ok ? { ok: true, message: `Opened in ${iterm ? 'iTerm' : 'Terminal'}` } : { ok: false, message: `Could not open terminal: ${r.error}` };
   }
@@ -163,13 +242,17 @@ function handle<C extends Channel>(channel: C, fn: (p: V.Parsed<C>) => Results[C
 function mutate<T>(fn: (cfg: Config) => T): T { const cfg = ca.load(); const r = fn(cfg); ca.save(cfg); refreshTray(); return r; }
 
 function registerIpc(): void {
-  handle('state:get', () => state());
+  handle('state:get', async p => { if (p.fresh) await askAll(); return state(); });
   handle('account:add', p => mutate(cfg => {
     if (Object.hasOwn(cfg.accounts, p.name)) throw new V.ValidationError(`An account named "${p.name}" already exists.`);
     ca.addAccount(cfg, p.name); return p.name;
   }));
   handle('account:remove', p => mutate(cfg => ca.removeAccount(cfg, p.account)));
-  handle('account:deepStatus', p => ca.deepStatus(V.knownAccount(ca.load(), p.account), { env: baseEnv() }));
+  handle('account:rename', p => mutate(cfg => {
+    V.knownAccount(cfg, p.account);
+    if (p.name !== p.account && Object.hasOwn(cfg.accounts, p.name)) throw new V.ValidationError(`An account named "${p.name}" already exists.`);
+    ca.renameAccount(cfg, p.account, p.name); return p.name;
+  }));
   handle('repo:bind', p => mutate(cfg => { V.knownAccount(cfg, p.account); return ca.bind(cfg, p.repo, p.account, p.mode); }));
   handle('repo:unbind', p => mutate(cfg => { V.boundRepo(cfg, p.repo); ca.unbind(cfg, p.repo); }));
   handle('dialog:pickRepo', async () => {
@@ -188,6 +271,7 @@ function registerIpc(): void {
   handle('action:login', async p => {
     const acc = V.knownAccount(ca.load(), p.account), c = ca.loginCmd(acc);
     const r = await openTerminal(c, () => ca.windowsLogin(acc, baseEnv()));
+    if (r.ok) watchSignIn(acc);
     return withCopy(r.ok ? { ...r, message: 'Finish the browser sign-in in the terminal window' } : r, c);
   });
   handle('action:desktop', async p => { const acc = V.knownAccount(ca.load(), p.account); return withCopy(await launchDesktop(acc), ca.desktopCmd(acc)); });
@@ -208,17 +292,37 @@ function registerIpc(): void {
   });
   handle('cli:status', () => cliStatus());
   handle('cli:install', () => {
-    const src = app.isPackaged ? path.join(process.resourcesPath, 'ca') : path.join(__dirname, '..', 'cli', 'ca');
-    const dest = path.join(os.homedir(), '.local', 'bin', IS_WIN ? 'ca.py' : 'ca');
-    fs.mkdirSync(path.dirname(dest), { recursive: true });
-    fs.copyFileSync(src, dest); fs.chmodSync(dest, 0o755);
+    if (IS_WIN) throw new ca.CaError("The ca CLI doesn't run on Windows yet.");
+    // The executable for this machine: bundled with the app, or built by npm run build in a checkout
+    const src = BUNDLED_CLI();
+    if (!fs.existsSync(src)) throw new ca.CaError(`The ca CLI isn't built (${src}). Run npm run build.`);
+    // The executable goes where PATH doesn't look, and ~/.local/bin gets the script that starts it (ca.cliWrapper)
+    const { script, program } = CLI();
+    installFile(program, fs.readFileSync(src));
+    installFile(script, ca.cliWrapper(program));
     return cliStatus();
   });
   handle('hook:get', p => ({ rc: `eval "$(ca shell-hook ${p.kind})"`, file: p.kind === 'zsh' ? '~/.zshrc' : '~/.bashrc' }));
 }
+const CLI = () => ({ script: path.join(os.homedir(), '.local', 'bin', 'ca'), program: path.join(os.homedir(), '.local', 'lib', 'claude-accounts', 'ca') });
+const BUNDLED_CLI = () => app.isPackaged ? path.join(process.resourcesPath, 'cli', 'ca') : path.join(__dirname, 'cli', `${process.platform}-${process.arch}`, 'ca');
+// A new file, renamed into place: macOS stops a signed program whose file was rewritten in place. Writing the bytes
+// also leaves behind the quarantine flag of a downloaded app, which would make macOS refuse to run ca.
+function installFile(dest: string, data: string | Buffer): void {
+  const tmp = `${dest}.tmp`;
+  fs.mkdirSync(path.dirname(dest), { recursive: true });
+  fs.writeFileSync(tmp, data, { mode: 0o755 });
+  fs.chmodSync(tmp, 0o755);
+  fs.renameSync(tmp, dest);
+}
+// Installed means this version's script and executable. Anything else at that path (an older ca, such as the Python
+// one, or an executable without its script) is outdated, and installing replaces it.
 function cliStatus(): CliStatus {
-  const dest = path.join(os.homedir(), '.local', 'bin', IS_WIN ? 'ca.py' : 'ca');
-  return { installed: fs.existsSync(dest), path: dest, onPath: userPath.split(path.delimiter).includes(path.dirname(dest)) };
+  const { script, program } = CLI(), want = ca.cliWrapper(program);
+  const size = (f: string) => { try { return fs.statSync(f).size; } catch { return -1; } };
+  let installed = false;
+  try { installed = size(script) === Buffer.byteLength(want) && fs.readFileSync(script, 'utf8') === want && size(program) === size(BUNDLED_CLI()); } catch {}
+  return { installed, outdated: !installed && size(script) >= 0, path: script, onPath: userPath.split(path.delimiter).includes(path.dirname(script)) };
 }
 
 // ---------------------------------------------------------------- tray / menu
@@ -236,10 +340,10 @@ function refreshTray(): void {
     const s = state();
     const repoItems: MenuItemConstructorOptions[] = s.repos.length ? s.repos.map(r => ({
       label: `${r.name}`, sublabel: `${r.account} · ${r.mode}`, toolTip: r.repo, enabled: r.exists,
-      click: () => { openRepo(r.repo).then(notify, failed); },
+      click: () => { if (r.mode !== 'desktop' || !guideFirst(r.account, r.repo)) openRepo(r.repo).then(notify, failed); },
     })) : [{ label: 'No repositories yet', enabled: false }];
     const accItems: MenuItemConstructorOptions[] = s.accounts.map(a => ({
-      label: `Open Desktop — ${a.name}`, click: () => { desktopFor(a.name).then(notify, failed); },
+      label: `Open Desktop — ${a.name}`, click: () => { if (!guideFirst(a.name)) desktopFor(a.name).then(notify, failed); },
     }));
     const desktop: MenuItemConstructorOptions[] = accItems.length ? [{ label: 'Claude Desktop', submenu: accItems }, { type: 'separator' }] : [];
     tray.setContextMenu(Menu.buildFromTemplate([
@@ -250,10 +354,25 @@ function refreshTray(): void {
 }
 // The account can be gone by the time its menu item is clicked; that is reported like any failed launch.
 async function desktopFor(name: string): Promise<Outcome> { return launchDesktop(V.knownAccount(ca.load(), name)); }
+// A Desktop window that has never opened isn't signed in, and a sign-in through the browser can't reach it while
+// another Claude is open. So the tray shows how to sign in, in the app's window, instead of opening it.
+function guideFirst(account: string, repo?: string): boolean {
+  let acc: Account;
+  try { acc = V.knownAccount(ca.load(), account); } catch { return false; }   // the launch reports it
+  if (!ca.desktopNeverOpened(acc)) return false;
+  send({ type: 'desktop-guide', account, ...(repo ? { repo } : {}) });
+  return true;
+}
 function event(ev: AppEvent): void { if (win && !win.isDestroyed()) win.webContents.send('app:event', ev); }
 function notify(res: Outcome & { command?: string }): void { event({ type: 'toast', ...res }); }
 const failed = (e: unknown) => notify({ ok: false, message: e instanceof Error ? e.message : String(e) });
-function send(ev: AppEvent): void { showWindow(); event(ev); }
+// Shows the window and sends it `ev`, once it has loaded when it is new
+const waiting: AppEvent[] = [];
+function send(ev: AppEvent): void {
+  if (win && !win.webContents.isLoading()) { showWindow(); event(ev); return; }
+  waiting.push(ev);
+  showWindow();
+}
 function buildMenu(): void {
   const item = (label: string, accelerator: string, ev: AppEvent): MenuItemConstructorOptions => ({ label, accelerator, registerAccelerator: false, click: () => send(ev) });
   const appMenu: MenuItemConstructorOptions[] = IS_MAC ? [{ label: app.name, submenu: [
@@ -298,6 +417,7 @@ function createWindow(): void {
   w.once('ready-to-show', () => w.show());
   w.on('closed', () => { win = null; });
   const wc = w.webContents;
+  wc.on('did-finish-load', () => { for (const ev of waiting.splice(0)) event(ev); });
   wc.on('will-navigate', e => e.preventDefault());
   wc.setWindowOpenHandler(() => ({ action: 'deny' }));
   wc.on('will-attach-webview', e => e.preventDefault());
@@ -327,7 +447,8 @@ app.whenReady().then(async () => {
   session.defaultSession.setPermissionRequestHandler((_wc, _perm, cb) => cb(false));
   session.defaultSession.setPermissionCheckHandler(() => false);
   nativeTheme.themeSource = getPrefs().theme;
+  userPathReady = resolveUserPath();
   registerIpc(); buildMenu(); createWindow(); watchConfig();
-  await resolveUserPath();
+  await userPathReady;
   refreshTray();
 });

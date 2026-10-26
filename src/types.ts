@@ -16,9 +16,18 @@ export interface Row {
   repo: string; name: string; account: string; mode: Mode; exists: boolean;
   login: LoginState | 'missing-account'; command: string;
 }
+// What `claude auth status` says about an account's CLI sign-in. `state` is null when it gave no clear answer, and
+// `note` says what it did say, for a person to read.
+export interface AuthStatus { state: LoginState | null; email: string | null; plan: string | null; org: string | null; note: string }
 export interface AccountView extends Account {
   name: string; color: number; login: LoginState; docker_login: LoginState; repoCount: number;
   desktop_cmd: string; login_cmd: string;
+  // who the CLI is signed in as, from the app's last `claude auth status`
+  email: string | null; plan: string | null; org: string | null; note: string | null;
+  // the app is asking `claude auth status` right now, or waiting for a sign-in it opened
+  checking: boolean; signingIn: boolean;
+  // its Claude Desktop folder is empty: that window has never opened, so it isn't signed in yet
+  desktopNew: boolean;
 }
 
 // prefs.json in the app's user data: app-only, never in config.json
@@ -33,7 +42,8 @@ export interface State {
 // What a launch reports. `command` is the line it ran, or would have run; a failed launch copies it.
 export interface Launch { ok: boolean; message: string; command: string }
 export interface PickedRepo { path: string; name: string; isGit: boolean }
-export interface CliStatus { installed: boolean; path: string; onPath: boolean }
+// `outdated`: something else is at `path`, such as an older ca, and installing replaces it
+export interface CliStatus { installed: boolean; outdated: boolean; path: string; onPath: boolean }
 export interface Hook { rc: string; file: string }
 export type View = 'repos' | 'accounts' | 'settings';
 
@@ -41,7 +51,9 @@ export type View = 'repos' | 'accounts' | 'settings';
 export type AppEvent =
   | { type: 'state-changed' | 'palette' | 'bind' | 'add-account' | 'refresh' }
   | { type: 'nav'; view: View }
-  | { type: 'toast'; ok: boolean; message: string; command?: string };
+  | { type: 'toast'; ok: boolean; message: string; command?: string }
+  // how to sign in to an account's Desktop window that has never opened, then open it (or `repo`, which opens with it)
+  | { type: 'desktop-guide'; account: string; repo?: string };
 
 export type CommandRequest =
   | { kind: 'terminal' | 'open' | 'docker' | 'container' | 'direnv'; repo: string; worktree?: string }
@@ -53,7 +65,7 @@ export interface Results {
   'state:get': State;
   'account:add': string;
   'account:remove': void;
-  'account:deepStatus': string;
+  'account:rename': string;
   'repo:bind': string;
   'repo:unbind': void;
   'dialog:pickRepo': PickedRepo | null;
@@ -74,10 +86,11 @@ export type Channel = keyof Results;
 
 // window.ca, the only API the renderer gets. Every call can reject with a message to show as it is.
 export interface Api {
-  state(): Promise<State>;
+  // `fresh` asks `claude auth status` again for every account before answering
+  state(fresh?: boolean): Promise<State>;
   addAccount(name: string): Promise<string>;
   removeAccount(account: string): Promise<void>;
-  deepStatus(account: string): Promise<string>;
+  renameAccount(account: string, name: string): Promise<string>;
   bind(repo: string, account: string, mode: Mode): Promise<string>;
   unbind(repo: string): Promise<void>;
   pickRepo(): Promise<PickedRepo | null>;

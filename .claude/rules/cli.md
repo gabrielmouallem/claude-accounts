@@ -5,11 +5,16 @@ paths:
 
 # The `ca` CLI
 
-- One file, stdlib only, Python 3.8+, `#!/usr/bin/env python3`. The app bundles it as is and its Install button
-  copies it to `~/.local/bin`, so it can't import anything from this repo.
-- **It mirrors `src/core.ts`** with the same functions in snake_case and identical output. `test/core.test.ts` loads it
-  as a module and compares the commands, the account-name rule and the shell-hook text with the app's. Change both
-  sides together.
+- **Two versions.** `cli/ca.ts` is the one the app bundles: TypeScript on `src/core.ts`, compiled with Bun by
+  `scripts/build-cli.ts`, which turns off loading `.env`, `bunfig.toml`, `package.json` and `tsconfig.json` from the
+  folder it runs in. Settings installs it in `~/.local/lib/claude-accounts` behind the `cliWrapper` script in
+  `~/.local/bin/ca`. `cli/ca` is the older Python version, one stdlib-only Python 3.8+ file, which `cli/ca.ts`
+  replaces. The rest of this file is about `cli/ca`.
+- In `cli/ca.ts`, find programs with `ca.program()` and run them with `ENV`, which keeps only absolute PATH entries
+  and gives back the caller's own `DO_NOT_TRACK`.
+- **The Python `cli/ca` mirrors `src/core.ts`** with the same functions in snake_case and identical output.
+  `test/core.test.ts` loads it as a module and compares the commands, the account-name rule and the shell-hook text
+  with the app's. Change both sides together.
 - **Errors:** a user error is `raise SystemExit("what went wrong; how to fix it")`, never a traceback. A binding whose
   account is gone goes through `account_of()`.
 - **Processes:**

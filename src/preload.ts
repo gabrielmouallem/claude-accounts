@@ -10,10 +10,10 @@ function call<C extends Channel>(channel: C, payload?: Payload<C>): Promise<Resu
 }
 
 const api: Api = {
-  state: () => call('state:get'),
+  state: fresh => call('state:get', fresh ? { fresh } : {}),
   addAccount: name => call('account:add', { name }),
   removeAccount: account => call('account:remove', { account }),
-  deepStatus: account => call('account:deepStatus', { account }),
+  renameAccount: (account, name) => call('account:rename', { account, name }),
   bind: (repo, account, mode) => call('repo:bind', { repo, account, mode }),
   unbind: repo => call('repo:unbind', { repo }),
   pickRepo: () => call('dialog:pickRepo'),
