@@ -1,8 +1,8 @@
 // Dock launchers, macOS only. Every account's Claude Desktop is the same Claude.app, with the same name and icon, so
 // the Dock can't tell them apart. An account can have a small app of its own instead: "<account> (Claude)" in
 // ~/Applications/Claude Accounts, its icon the account's name under Claude's mark, that opens the account's Claude
-// Desktop or brings it forward (launcher/launcher.swift). The app builds, renames and removes them; ca opens Desktop
-// through one when it exists, and removes an account's launcher with the account.
+// Desktop or brings it forward (launcher/launcher.swift). The app builds, renames and removes them, also for accounts
+// that ca renames or removes: it watches config.json, and checks again when it starts.
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';

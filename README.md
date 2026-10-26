@@ -94,6 +94,50 @@ Everything lives in one place:
         └── docker-claude/          # container login
 ```
 
+### Dock apps (macOS)
+
+Every account's Claude Desktop is the same Claude app, with the same name and icon, so the Dock can't tell them apart.
+**Keep in Dock** gives an account a small app of its own: "*account* (Claude)" in `~/Applications/Claude Accounts`,
+with the account's name on its icon. A click on it does this:
+
+```text
+click "work (Claude)"
+  ─▶ is a Claude Desktop with --user-data-dir=…/accounts/work/desktop running?
+       yes  ─▶  bring it forward
+       no   ─▶  open a new Claude Desktop with --user-data-dir=…/accounts/work/desktop
+                                          and  CLAUDE_CONFIG_DIR=…/accounts/work/claude
+```
+
+- **Built on your Mac.** Claude Accounts ships one small program, `launcher/launcher.swift`, and builds each Dock app
+  around it. The app's `Info.plist` holds the account's name and folders, paths only. The same program draws the icon:
+  Claude's mark over the account's name in capitals, or over the first word of a long name (`grade-account` shows
+  GRADE). On a small Dock, the name gives way to its initial. Each app is signed ad hoc and registered with macOS, so
+  Spotlight finds it too.
+- **On a click,** it reads `config.json` first. It follows an account renamed with `ca`, and if the account is gone,
+  it offers to take itself out of the Dock and move itself to the Trash. It finds the account's Claude by the
+  `--user-data-dir` on its command line, never by its environment. Before it opens a new Claude, it drops
+  `ANTHROPIC_API_KEY`, so that Claude runs on the account's plan. Before an account's first sign-in, it shows how to
+  sign in to that window.
+- **While its Claude is open,** the Dock app stays open too, so the Dock shows it running, and it quits when that
+  Claude quits. **Quit** in its Dock menu quits that Claude the way Claude's own menu does, and switching to it with
+  ⌘Tab switches to its Claude. Claude keeps running after you close its last window. If it comes forward with no
+  window on screen, the Dock app sends it the reopen event that a click on Claude's own Dock icon sends. macOS asks
+  you once whether it may (see [Troubleshooting](#troubleshooting)).
+- **Claude Accounts opens Desktop through it.** For an account with a Dock app, opening a repository that opens with
+  Claude Desktop brings that account's Claude forward instead of starting a second one.
+- **Kept in step with your accounts.** Renaming an account rebuilds its Dock app under the new name, in the same place
+  in the Dock. Removing the account, or **Remove from Dock**, takes the tile out and deletes the app. Changes made
+  with `ca` count too: Claude Accounts watches `config.json`, and checks again when it starts. An update that changes
+  the program rebuilds every Dock app.
+- **Only its own tiles.** The Dock keeps its apps in its preferences (`com.apple.dock`, `persistent-apps`) and reads
+  them when it starts. Claude Accounts adds, moves and removes only the tiles whose ids start with
+  `dev.gabriel.claude-accounts.launcher.`, then restarts the Dock, which redraws for a moment. It does that only when
+  a tile was added, moved or removed, or an icon changed. If your organization manages the Dock with a profile,
+  nothing is changed.
+
+Claude itself still shows as Claude in the Dock and in ⌘Tab, since only Claude can change its own name and icon. The
+account's tile, with its running dot, tells you which accounts are open.
+
 ## Install the app
 
 1. Download the build for your machine from [Releases](https://github.com/gabrielmouallem/claude-accounts/releases):
@@ -138,6 +182,7 @@ Other things you can do:
   "*account* (Claude)" in `~/Applications/Claude Accounts`, whose icon shows the account's name under Claude's mark.
   Click it to open that account's Claude Desktop, or to bring it forward. The Dock shows it running while that Claude
   is open, and **Quit** in its Dock menu quits that Claude. Renaming or removing the account updates or removes it.
+  See [Dock apps](#dock-apps-macos) for how they work.
 - Remove an account from its **⋯** menu. **Sign out and move its folders to the Trash** is on by default: it signs
   the account out of Claude Code, then moves its folders (its Claude Code settings and history, and its Claude Desktop
   data) to the Trash. Turn it off to keep them where they are.
@@ -353,6 +398,20 @@ It asks once, the first time you click an account's Dock app while that account'
 Allowing it lets the app bring the window back, the way clicking Claude in the Dock does. Without it, quit that
 Claude from the app's Dock menu and click again. You can change your answer in System Settings, under Privacy &
 Security, then Automation.
+</details>
+
+<details>
+<summary><strong>The Dock shows an old icon</strong></summary>
+
+The Dock keeps its own cache of icons, and restarting the Dock doesn't clear it, so after an update a tile can keep
+its old picture. Clear the cache, then restart the Dock and Finder:
+
+```sh
+rm "$(getconf DARWIN_USER_CACHE_DIR)com.apple.dock.iconcache"
+killall -KILL Dock; killall Finder
+```
+
+The Dock writes a new cache as it starts.
 </details>
 
 <details>

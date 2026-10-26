@@ -131,9 +131,11 @@ func drawIcon(label: String, px: Int) -> NSBitmapImageRep {
     return rep.retagging(with: .sRGB) ?? rep
 }
 
-// The sizes iconutil puts in an .icns, each a PNG: 16, 32, 128, 256 and 512 points, at 1x and 2x.
-let ICNS: [(String, Int)] = [("icp4", 16), ("ic11", 32), ("icp5", 32), ("ic12", 64), ("ic07", 128), ("ic13", 256),
-                             ("ic08", 256), ("ic14", 512), ("ic09", 512), ("ic10", 1024)]
+// The sizes in an .icns, each a PNG: 16 and 32 points at 2x, and 128, 256 and 512 points at 1x and 2x. iconutil stores
+// 16 and 32 at 1x as raw ARGB (ic04, ic05); as PNGs (icp4, icp5) current macOS decodes them as noise, so they're left
+// out and macOS scales the 2x ones down.
+let ICNS: [(String, Int)] = [("ic11", 32), ("ic12", 64), ("ic07", 128), ("ic13", 256), ("ic08", 256), ("ic14", 512),
+                             ("ic09", 512), ("ic10", 1024)]
 
 func renderIcon(_ args: [String]) -> Int32 {
     guard args.count == 3, !args[2].isEmpty else { return usage() }

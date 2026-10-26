@@ -14,8 +14,10 @@ fs.mkdirSync(path.join(B, 'icons'), { recursive: true });
 const sizes = [16, 32, 48, 64, 128, 256, 512, 1024], bufs: Record<number, Buffer> = {};
 for (const s of sizes) { bufs[s] = await png(s); fs.writeFileSync(path.join(B, 'icons', `${s}x${s}.png`), bufs[s]); }
 fs.writeFileSync(path.join(B, 'icon.png'), bufs[1024]!);
-// ICNS with PNG payloads: icp4 16, icp5 32, icp6 64, ic07 128, ic08 256, ic09 512, ic10 1024 (512@2x), ic11 32(16@2x), ic12 64, ic13 256, ic14 512
-const ent: [string, number][] = [['icp4', 16], ['icp5', 32], ['icp6', 64], ['ic07', 128], ['ic08', 256], ['ic09', 512], ['ic10', 1024], ['ic11', 32], ['ic12', 64], ['ic13', 256], ['ic14', 512]];
+// ICNS with PNG payloads: ic11 32 (16@2x), ic12 64 (32@2x), ic07 128, ic13 256 (128@2x), ic08 256, ic14 512 (256@2x),
+// ic09 512, ic10 1024 (512@2x). iconutil stores 16 and 32 at 1x as raw ARGB (ic04, ic05); as PNGs (icp4, icp5) current
+// macOS decodes them as noise, so they're left out and macOS scales the 2x ones down.
+const ent: [string, number][] = [['ic11', 32], ['ic12', 64], ['ic07', 128], ['ic13', 256], ['ic08', 256], ['ic14', 512], ['ic09', 512], ['ic10', 1024]];
 const parts = ent.map(([t, s]) => { const h = Buffer.alloc(8), b = bufs[s]!; h.write(t, 0, 'ascii'); h.writeUInt32BE(b.length + 8, 4); return Buffer.concat([h, b]); });
 const body = Buffer.concat(parts), head = Buffer.alloc(8); head.write('icns', 0, 'ascii'); head.writeUInt32BE(body.length + 8, 4);
 fs.writeFileSync(path.join(B, 'icon.icns'), Buffer.concat([head, body]));
