@@ -1,6 +1,7 @@
 // Builds the app into out/: the main process and the preload as CommonJS bundles for Electron, the renderer as one
 // script for its page, and the page's static files. esbuild only strips the types; npm run typecheck checks them.
-// On macOS and Linux it also compiles the ca CLI for this machine (scripts/build-cli.ts), for the Install button.
+// On macOS and Linux it also compiles the ca CLI for this machine (scripts/build-cli.ts), for the Install button, and on
+// macOS the program in every Dock launcher (scripts/build-launcher.ts).
 //
 //   node scripts/build.ts            or   import { build } from './build.ts'
 import fs from 'node:fs';
@@ -8,6 +9,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as esbuild from 'esbuild';
 import { buildCli } from './build-cli.ts';
+import { buildLauncher } from './build-launcher.ts';
 
 const ROOT = path.join(import.meta.dirname, '..');
 const OUT = path.join(ROOT, 'out');
@@ -25,6 +27,7 @@ export async function build(): Promise<void> {
   ]);
   for (const f of STATIC) fs.cpSync(path.join(ROOT, 'src', 'renderer', f), path.join(OUT, 'renderer', f), { recursive: true });
   if (process.platform !== 'win32') buildCli({ quiet: true });
+  buildLauncher({ quiet: true });
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) await build();

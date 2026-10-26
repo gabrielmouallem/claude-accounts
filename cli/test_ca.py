@@ -89,7 +89,8 @@ class T(unittest.TestCase):
     def test_env_construction(self):
         acc = ca.load()["accounts"]["work"]
         # any spelling of the key goes, since Windows ignores case in names
-        env = ca.claude_env(acc, {"ANTHROPIC_API_KEY": "x", "anthropic_api_key": "y", "Claude_Config_Dir": "/old", "PATH": "/bin"})
+        env = ca.claude_env(acc, {"ANTHROPIC_API_KEY": "x", "anthropic_api_key": "y", "Claude_Config_Dir": "/old",
+                                  "Claude_SecureStorage_Config_Dir": "/one", "PATH": "/bin"})
         self.assertEqual(env, {"CLAUDE_CONFIG_DIR": acc["config_dir"], "PATH": "/bin"})
         out = sh("env", "--shell", os.path.join(self.r1, "src")).stdout
         self.assertIn(f"export CLAUDE_CONFIG_DIR={shlex.quote(acc['config_dir'])}", out)   # shell text: C:\... comes quoted

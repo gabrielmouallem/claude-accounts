@@ -17,7 +17,10 @@
 </p>
 
 <p align="center">
-  <img src="docs/screenshots/1-repositories-dark.png" width="820" alt="Repositories view: each repo bound to an account and a launch mode">
+  <picture>
+    <source media="(prefers-color-scheme: light)" srcset="docs/screenshots/8-repositories-light.png">
+    <img src="docs/screenshots/1-repositories-dark.png" width="820" alt="Repositories view: each repo bound to an account and a launch mode">
+  </picture>
 </p>
 
 ---
@@ -114,8 +117,8 @@ There's no tray, and there's no official Claude Desktop for Linux.
 ## Using the app
 
 <p align="center">
-  <img src="docs/screenshots/4-onboarding-dark.png" width="49%" alt="Onboarding: add account, sign in, bind a repo">
-  <img src="docs/screenshots/2-accounts-dark.png" width="49%" alt="Accounts view with login status per account">
+  <img src="docs/screenshots/2-accounts-dark.png" width="49%" alt="Accounts view with sign-in status per account, dark theme">
+  <img src="docs/screenshots/9-accounts-light.png" width="49%" alt="Accounts view with sign-in status per account, light theme">
 </p>
 
 1. **Add an account.** Give it a short name like `work` or `personal`. It gets its own private folders.
@@ -131,6 +134,13 @@ Other things you can do:
 - **Accounts** shows who each account is signed in as (email and plan), its CLI and container sign-in, and its
   repositories. The status updates by itself, including right after a sign-in. **Refresh** (⌘R) asks again.
 - Rename an account from its **⋯** menu or the palette. Its repositories move with it, and it stays signed in.
+- **Keep an account in the Dock** (macOS), from its card, its **⋯** menu or the palette. It gets an app of its own,
+  "*account* (Claude)" in `~/Applications/Claude Accounts`, whose icon shows the account's name under Claude's mark.
+  Click it to open that account's Claude Desktop, or to bring it forward. The Dock shows it running while that Claude
+  is open, and **Quit** in its Dock menu quits that Claude. Renaming or removing the account updates or removes it.
+- Remove an account from its **⋯** menu. **Sign out and move its folders to the Trash** is on by default: it signs
+  the account out of Claude Code, then moves its folders (its Claude Code settings and history, and its Claude Desktop
+  data) to the Trash. Turn it off to keep them where they are.
 - **Settings**: theme, Terminal vs iTerm2, the menu-bar item, and a one-click install of the `ca` CLI to `~/.local/bin`.
 - The app watches `config.json`, so changes made with the CLI show up live.
 
@@ -158,14 +168,19 @@ On Windows and Linux, use <kbd>Ctrl</kbd> in place of <kbd>⌘</kbd>.
 </details>
 
 <details>
-<summary><strong>More screenshots</strong> (command palette, light theme)</summary>
+<summary><strong>More screenshots</strong> (repositories, command palette, settings, first run), dark and light</summary>
 
 <br>
 
 <p align="center">
-  <img src="docs/screenshots/3-command-palette-dark.png" width="49%" alt="Command palette">
+  <img src="docs/screenshots/1-repositories-dark.png" width="49%" alt="Repositories view, dark theme">
   <img src="docs/screenshots/8-repositories-light.png" width="49%" alt="Repositories view, light theme">
-  <img src="docs/screenshots/9-accounts-light.png" width="49%" alt="Accounts view, light theme">
+  <img src="docs/screenshots/3-command-palette-dark.png" width="49%" alt="Command palette, dark theme">
+  <img src="docs/screenshots/10-palette-light.png" width="49%" alt="Command palette, light theme">
+  <img src="docs/screenshots/7-settings-dark.png" width="49%" alt="Settings, dark theme">
+  <img src="docs/screenshots/11-settings-light.png" width="49%" alt="Settings, light theme">
+  <img src="docs/screenshots/4-onboarding-dark.png" width="49%" alt="First run: add an account, sign in, bind a repository, dark theme">
+  <img src="docs/screenshots/12-onboarding-light.png" width="49%" alt="First run: add an account, sign in, bind a repository, light theme">
 </p>
 
 </details>
@@ -254,7 +269,11 @@ ca shell-hook direnv ~/code/acme --write
 - **`ANTHROPIC_API_KEY` is stripped** from every session it launches, in any letter case, so the
   account's subscription login is used instead of a global key.
 - **Private folders.** Account folders are created `0700`. The app writes `config.json` atomically
-  with mode `0600`. The file holds paths and bindings only, never credentials.
+  with mode `0600`. The file holds paths and bindings only, never credentials. The app removes folders only when
+  you remove an account with **Sign out and move its folders to the Trash** on, and then moves only that account's
+  own folders, inside `~/.config/claude-accounts/accounts`, to the Trash.
+- **Dock apps** find their account's Claude by its command line, never its environment, and change only their own
+  tiles in the Dock.
 - **Electron hardening.** `contextIsolation`, no `nodeIntegration`, a sandboxed renderer, a minimal
   preload, a strict CSP, sender checks and validation on every IPC call. Navigation, new windows and
   permission requests are denied.
@@ -321,8 +340,19 @@ own `node`. Run such a program by its path instead, for example `.\gradlew` rath
 <details>
 <summary><strong>Removing an account didn't log it out</strong></summary>
 
-Removing an account only takes it out of `config.json`. Its folders (login, history, Desktop data) are
-kept on purpose. To wipe them, use *Reveal folder* on the account first, then delete the folder.
+Remove it with **Sign out and move its folders to the Trash** on, which is the default. That runs `claude auth logout`
+for the account first, which deletes its sign-in from the Keychain, and then moves its folders to the Trash. Deleting the folder by hand
+leaves that sign-in in the Keychain, filed under the folder's path, so an account added later with the same name finds
+itself signed in. If that happened, add the account again, then remove it with the option on.
+</details>
+
+<details>
+<summary><strong>macOS asks whether "<em>account</em> (Claude)" may control Claude</strong></summary>
+
+It asks once, the first time you click an account's Dock app while that account's Claude is open without a window.
+Allowing it lets the app bring the window back, the way clicking Claude in the Dock does. Without it, quit that
+Claude from the app's Dock menu and click again. You can change your answer in System Settings, under Privacy &
+Security, then Automation.
 </details>
 
 <details>

@@ -71,8 +71,8 @@ test('findRepo from a subdirectory', () => {
 
 test('env construction strips ANTHROPIC_API_KEY', () => {
   const acc = account('work');
-  const env = ca.claudeEnv(acc, { ANTHROPIC_API_KEY: 'x', PATH: '/bin' });
-  assert.equal(env.CLAUDE_CONFIG_DIR, acc.config_dir); assert.ok(!('ANTHROPIC_API_KEY' in env));
+  const env = ca.claudeEnv(acc, { ANTHROPIC_API_KEY: 'x', CLAUDE_SECURESTORAGE_CONFIG_DIR: '/one', PATH: '/bin' });
+  assert.equal(env.CLAUDE_CONFIG_DIR, acc.config_dir); assert.ok(!('ANTHROPIC_API_KEY' in env) && !('CLAUDE_SECURESTORAGE_CONFIG_DIR' in env));
   // shell text, so a Windows path (C:\...) comes quoted
   assert.ok(ca.envShell(ca.load(), path.join(r1, 'src')).includes(`export CLAUDE_CONFIG_DIR=${ca.shQuote(acc.config_dir)}`));
   assert.ok(ca.envShell(ca.load(), TMP).includes('unset'));
@@ -143,6 +143,21 @@ test('a new account gets folders of its own, even where a removed account left i
   assert.equal(path.basename(path.dirname(ca.addAccount(cfg, 'temp').config_dir)), 'temp-2');
 });
 
+test("removing an account takes only its own folders, as the folder that holds them when that's all it holds", () => {
+  const cfg = ca.load();
+  const solo = ca.addAccount(cfg, 'solo');
+  assert.equal(ca.ownFolders(cfg, 'solo').length, 3);
+  assert.deepEqual(ca.trashList(ca.ownFolders(cfg, 'solo')), [path.dirname(solo.config_dir)]);
+  // a folder given elsewhere stays, and so do one another account uses and one inside another account's
+  const elsewhere = path.join(TMP, 'elsewhere-desktop');
+  fs.mkdirSync(elsewhere);
+  const mixed = ca.addAccount(cfg, 'mixed', undefined, elsewhere), other = ca.addAccount(cfg, 'other');
+  other.docker_config_dir = mixed.docker_config_dir;
+  assert.deepEqual(ca.ownFolders(cfg, 'mixed'), [mixed.config_dir]);
+  assert.deepEqual(ca.trashList(ca.ownFolders(cfg, 'mixed')), [mixed.config_dir]);
+  const inner = ca.addAccount(cfg, 'inner', path.join(other.config_dir, 'projects'));
+  assert.ok(!ca.ownFolders(cfg, 'inner').includes(inner.config_dir));
+});
 test('adding an account that exists keeps its folders, except the ones given', () => {
   const cfg = ca.load(), before = account('work');
   assert.deepEqual(ca.addAccount(cfg, 'work'), before);
@@ -231,7 +246,8 @@ test('IPC payloads are checked against the schema for their channel', () => {
   assert.throws(() => V.parse('shell:reveal', { target: 'repo' }), /invalid path/);
   assert.throws(() => V.parse('prefs:set', { theme: 'neon' }), /invalid theme/);
   // unknown fields, a payload that isn't an object, or none where one is needed
-  assert.throws(() => V.parse('account:remove', { account: 'work', extra: 1 }), /invalid payload/);
+  assert.throws(() => V.parse('account:remove', { account: 'work', purge: true, extra: 1 }), /invalid payload/);
+  assert.throws(() => V.parse('account:dock', { account: 'work', keep: 'yes' }), /invalid keep/);
   assert.throws(() => V.parse('state:get', 'x'), /invalid payload/);
   assert.throws(() => V.parse('account:remove', undefined), /invalid account/);
   assert.deepEqual(V.parse('state:get', undefined), {});

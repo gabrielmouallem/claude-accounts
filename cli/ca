@@ -179,9 +179,10 @@ def deep_status(acc):
 
 # ---------------------------------------------------------------- commands
 def claude_env(acc, base=None):
-    # Every spelling goes, since Windows ignores case in names. A global key would override the subscription login.
+    # Every spelling goes, since Windows ignores case in names. A global key would override the subscription login, and
+    # CLAUDE_SECURESTORAGE_CONFIG_DIR would file every account's macOS sign-in under one folder's hash.
     env = {k: v for k, v in (os.environ if base is None else base).items()
-           if k.upper() not in ("ANTHROPIC_API_KEY", "CLAUDE_CONFIG_DIR")}
+           if k.upper() not in ("ANTHROPIC_API_KEY", "CLAUDE_CONFIG_DIR", "CLAUDE_SECURESTORAGE_CONFIG_DIR")}
     env["CLAUDE_CONFIG_DIR"] = acc["config_dir"]
     return env
 

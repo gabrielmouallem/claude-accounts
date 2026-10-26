@@ -17,9 +17,11 @@ containers. Sessions run on the account's subscription, never on an API key.
 | `src/renderer/` | The UI: TypeScript with a small `h()` DOM helper, `styles.css`, `icons.ts`. `mark.svg` is generated |
 | `cli/ca.ts` | The CLI the app bundles and installs: TypeScript on `src/core.ts`, compiled with Bun by `scripts/build-cli.ts` |
 | `cli/ca` | The older CLI as one Python file, stdlib only, for use without the app. `cli/ca.ts` replaces it |
+| `src/launchers.ts` | Dock launchers (macOS): one small app per account in `~/Applications/Claude Accounts`, built, renamed and removed with the account |
+| `launcher/launcher.swift` | The program inside every launcher. It also draws their icons and edits the Dock (`--render-icon`, `--dock-*`) |
 | `test/` | `node:test` suite. `core.test.ts` also checks parity with the Python CLI; `cli.test.ts` runs the compiled one; `windows.test.ts` runs only on Windows |
 | `cli/test_ca.py` | `unittest` suite for the Python CLI |
-| `scripts/` | `build.ts` (esbuild), `build-cli.ts` (the bundled `ca`), `icon-art.ts` (the icon's source), `make-icons.ts`, `sandbox.ts`, `screenshots.ts`, `demo-config.sh` |
+| `scripts/` | `build.ts` (esbuild), `build-cli.ts` (the bundled `ca`), `build-launcher.ts` (the launchers' program, needs Xcode's tools), `icon-art.ts` (the icon's source), `make-icons.ts`, `sandbox.ts`, `screenshots.ts`, `demo-config.sh` |
 | `build/` | Generated icons (`npm run icons`). Don't edit by hand |
 | `out/` | The build Electron runs and packages (`npm run build`). Git ignores it |
 
@@ -32,6 +34,7 @@ npm test                                               # node:test suite
 python3 -m unittest discover -s cli -p 'test_*.py'     # CLI suite
 npm run build                                          # src/ into out/ (start, sandbox, shots and dist run it)
 node scripts/build-cli.ts darwin-arm64                 # the bundled ca, in out/cli/<platform>-<arch> (dist runs it)
+node scripts/build-launcher.ts                         # the Dock launchers' program, in out/launcher (build runs it)
 npm run sandbox                                        # the app on fake demo data, launching disabled
 npm run icons                                          # redraw every icon from scripts/icon-art.ts
 npm run shots                                          # regenerate docs/screenshots (macOS, or Linux + Xvfb)
@@ -50,7 +53,8 @@ config and user-data folder, so it never touches the real ones. `npm start` uses
    requests and has no telemetry, update checks, CDNs or remote fonts. The CLI opens no ports. A new dependency must
    not phone home.
    - A `claude` the app runs on its own (`claude auth status`) gets `QUIET` (`core.ts`), and runs only at start-up,
-     when an account's folder first gets files, on Refresh and while a sign-in it opened is pending.
+     when an account's folder first gets files, on Refresh and while a sign-in it opened is pending. So does
+     `claude auth logout` (`signOut`), which runs only when you remove an account and its folders.
    - The installed `ca` is the `cliWrapper` script, which starts the Bun executable with `DO_NOT_TRACK=1`; without
      it, Bun uploads a report when it crashes. `selfCommand()` prints the script, so the shell hook uses it too.
 3. **Subscription first.** Every launch drops `ANTHROPIC_API_KEY` in any letter case, since Windows ignores case in
@@ -72,7 +76,10 @@ config and user-data folder, so it never touches the real ones. `npm start` uses
 6. **Build the DOM with `h()` and text nodes.** Never use `innerHTML` with data. Keep the CSP: no inline scripts or
    styles, nothing remote.
 7. **Private files.** Account folders are `0700`. `config.json` is `0600`, written atomically (temp file plus rename).
-   The app never deletes an account's folders.
+   The app takes an account's folders away only when you remove it with **Sign out and move its folders to the Trash**
+   on (the default). It signs the account out first (`signOut`; on Windows the sign-in is a file in the folder),
+   since the Keychain files the sign-in under the folder's path, and stops if that fails. Demo mode refuses. Then it moves to the Trash only folders inside `accounts/` that no other
+   account uses (`ownFolders`, `trashList`), never deleting them outright.
 8. **One config, two writers.** The app and the CLI share `config.json`: sorted keys, 2-space indent, UTF-8. A change to
    `src/core.ts` usually needs the same change in `cli/ca`. The parity tests in `test/core.test.ts` catch drift.
 9. **The account follows the repository**, never the usage left on a plan. Don't build anything that switches

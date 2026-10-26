@@ -28,6 +28,8 @@ export interface AccountView extends Account {
   checking: boolean; signingIn: boolean;
   // its Claude Desktop folder is empty: that window has never opened, so it isn't signed in yet
   desktopNew: boolean;
+  // its launcher (src/launchers.ts): the color's place in the palette, the word on the icon, and whether it is in the Dock
+  launcher: { label: string; docked: boolean } | null;
 }
 
 // prefs.json in the app's user data: app-only, never in config.json
@@ -38,6 +40,8 @@ export interface Prefs { theme: Theme; terminal: TerminalApp; onboarded: boolean
 export interface State {
   accounts: AccountView[]; repos: Row[]; configPath: string; system: System; previewPlatform: string; prefs: Prefs;
   launchDisabled: boolean; version: string; home: string;
+  // accounts can have Dock launchers here (macOS, with launching on)
+  dock: boolean;
 }
 // What a launch reports. `command` is the line it ran, or would have run; a failed launch copies it.
 export interface Launch { ok: boolean; message: string; command: string }
@@ -64,7 +68,8 @@ export type RevealRequest = { target: 'config' } | { target: 'repo'; repo: strin
 export interface Results {
   'state:get': State;
   'account:add': string;
-  'account:remove': void;
+  'account:remove': string;
+  'account:dock': string;
   'account:rename': string;
   'repo:bind': string;
   'repo:unbind': void;
@@ -89,7 +94,10 @@ export interface Api {
   // `fresh` asks `claude auth status` again for every account before answering
   state(fresh?: boolean): Promise<State>;
   addAccount(name: string): Promise<string>;
-  removeAccount(account: string): Promise<void>;
+  // `purge` also signs it out of Claude Code and deletes its own folders
+  removeAccount(account: string, purge: boolean): Promise<string>;
+  // keeps the account's launcher in the Dock, or takes it out and deletes it
+  setDock(account: string, keep: boolean): Promise<string>;
   renameAccount(account: string, name: string): Promise<string>;
   bind(repo: string, account: string, mode: Mode): Promise<string>;
   unbind(repo: string): Promise<void>;

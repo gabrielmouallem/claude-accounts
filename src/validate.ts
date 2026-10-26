@@ -29,7 +29,8 @@ const none = z.strictObject({});
 export const PAYLOADS = {
   'state:get': z.strictObject({ fresh: z.boolean().optional() }),
   'account:add': z.strictObject({ name: accountName }),
-  'account:remove': z.strictObject({ account }),
+  'account:remove': z.strictObject({ account, purge: z.boolean() }),
+  'account:dock': z.strictObject({ account, keep: z.boolean() }),
   'account:rename': z.strictObject({ account, name: accountName }),
   'repo:bind': z.strictObject({ repo, account, mode: z.enum(MODES).default('terminal') }),
   'repo:unbind': z.strictObject({ repo }),

@@ -8,14 +8,17 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { execFile, spawn, type ExecFileOptions } from 'node:child_process';
 import * as ca from './core.ts';
+import * as L from './launchers.ts';
 import * as V from './validate.ts';
-import type { Account, AppEvent, AuthStatus, Channel, CliStatus, Config, Engine, Launch, LoginState, Prefs, Results, State } from './types.ts';
+import type { Account, AccountView, AppEvent, AuthStatus, Channel, CliStatus, Config, Engine, Launch, LoginState, Prefs, Results, State } from './types.ts';
 
 const IS_MAC = process.platform === 'darwin', IS_WIN = process.platform === 'win32';
 const PREVIEW = process.env.CA_PREVIEW_PLATFORM || '';        // screenshot mode on Linux: renders the macOS layout
 const LAUNCH_DISABLED = process.env.CA_NO_LAUNCH === '1';      // demo/screenshot mode: never spawn anything
 const RENDERER = path.join(__dirname, 'renderer', 'index.html');
 const RENDERER_URL = pathToFileURL(RENDERER).href;
+// The program inside every Dock launcher (launcher/launcher.swift), which the app also runs to draw icons and edit the Dock
+const LAUNCHER_STUB = () => app.isPackaged ? path.join(process.resourcesPath, 'launcher', 'ClaudeAccountsLauncher') : path.join(__dirname, 'launcher', 'ClaudeAccountsLauncher');
 
 app.setName('Claude Accounts');
 if (!app.requestSingleInstanceLock()) { app.quit(); }
@@ -61,6 +64,7 @@ function state(): State {
   const cfg = ca.load();
   const names = Object.keys(cfg.accounts).sort();
   const rows = ca.rows(cfg);
+  const launchers = new Map(launcherOpts() ? L.listLaunchers().map(l => [l.id, l]) : []);
   const accounts = names.map((n, i) => {
     const a = cfg.accounts[n]!, login = signIn(a), known = auth.get(a.config_dir);
     // who it is signed in as means something only while it is signed in
@@ -69,12 +73,47 @@ function state(): State {
              login, docker_login: ca.dockerLoginState(a), repoCount: rows.filter(r => r.account === n).length,
              desktop_cmd: ca.desktopCmd(a), login_cmd: ca.loginCmd(a),
              email: who?.email ?? null, plan: who?.plan ?? null, org: who?.org ?? null, note: known && !known.state ? known.note : null,
-             checking: asking.has(a.config_dir), signingIn: signingIn.has(a.config_dir), desktopNew: ca.desktopNeverOpened(a) };
+             checking: asking.has(a.config_dir), signingIn: signingIn.has(a.config_dir), desktopNew: ca.desktopNeverOpened(a),
+             launcher: launcherView(launchers.get(L.launcherId(a.desktop_user_data_dir))) };
   });
   const loginBy = new Map(accounts.map(a => [a.name, a.login]));
   const repos = rows.map(r => r.login === 'keychain?' ? { ...r, login: loginBy.get(r.account) ?? r.login } : r);
   return { accounts, repos, configPath: ca.configPath(), system: ca.SYSTEM, previewPlatform: PREVIEW, prefs: getPrefs(),
-           launchDisabled: LAUNCH_DISABLED, version: app.getVersion(), home: os.homedir() };
+           launchDisabled: LAUNCH_DISABLED, version: app.getVersion(), home: os.homedir(), dock: launcherOpts() !== null };
+}
+
+// ---------------------------------------------------------------- Dock launchers (src/launchers.ts)
+// What the launchers need, or null where accounts can't have them: off macOS, in demo mode, or in a build without the
+// program (made without a Swift compiler).
+function launcherOpts(): L.LauncherOptions | null {
+  const stub = LAUNCHER_STUB();
+  return IS_MAC && !LAUNCH_DISABLED && fs.existsSync(stub) ? { stub, version: app.getVersion() } : null;
+}
+function launcherView(l: L.Launcher | undefined): AccountView['launcher'] {
+  return l ? { label: l.label, docked: inDock.has(l.id) } : null;
+}
+// The launchers in the Dock as of the last look: at start-up, after the app changes the Dock, and when the window
+// comes forward (someone may have dragged one out).
+let inDock = new Set<string>();
+async function lookAtDock(): Promise<void> {
+  const o = launcherOpts();
+  if (!o) return;
+  try {
+    const ids = await L.docked(o);
+    if ([...ids].sort().join() !== [...inDock].sort().join()) { inDock = ids; event({ type: 'state-changed' }); }
+  } catch {}
+}
+// Rebuilds or removes launchers when accounts change, one run at a time; a change during a run brings another.
+let syncing = false, syncAgain = false;
+function syncLaunchers(): void {
+  const o = launcherOpts();
+  if (!o) return;
+  if (syncing) { syncAgain = true; return; }
+  syncing = true;
+  Promise.resolve().then(() => L.syncLaunchers(ca.load(), o)).catch(failed).finally(() => {
+    syncing = false;
+    if (syncAgain) { syncAgain = false; syncLaunchers(); } else void lookAtDock();
+  });
 }
 
 // ---------------------------------------------------------------- sign-in status
@@ -129,6 +168,8 @@ function watchSignIn(acc: Account): void {
   event({ type: 'state-changed' });
   if (running) return;   // the loop below picks up the new limit
   const tick = async () => {
+    if (!signingIn.has(dir)) return;   // stopped: the account is signing out to be removed
+    if (!accountNamed(dir)) { signingIn.delete(dir); event({ type: 'state-changed' }); return; }   // removed meanwhile
     const now = await ask(acc);
     const done = now.state === 'logged-in' && (was?.state !== 'logged-in' || now.email !== was.email);
     if (!done && Date.now() < (signingIn.get(dir) ?? 0)) { setTimeout(tick, SIGN_IN_POLL); return; }
@@ -187,6 +228,12 @@ async function launchDesktop(acc: Account): Promise<Outcome> {
   if (LAUNCH_DISABLED) return { ok: false, message: 'Launching is disabled in demo mode. Command copied.' };
   if (!l) return { ok: false, message: 'There is no official Claude Desktop for Linux. Command copied.' };
   if (IS_WIN && !fs.existsSync(l.file)) return { ok: false, message: 'Claude Desktop not found in %LOCALAPPDATA%\\AnthropicClaude. Command copied.' };
+  // An account with a launcher opens through it, which brings its Claude forward when it is open already
+  const launcher = launcherOpts() ? L.launcherFor(acc) : null;
+  if (launcher) {
+    const r = await run('/usr/bin/open', ['-a', launcher.app, '--args', '--no-guide'], { env: L.launcherEnv(baseEnv()) });
+    return r.ok ? { ok: true, message: 'Claude Desktop opened' } : { ok: false, message: `Launch failed: ${r.error}` };
+  }
   if (IS_WIN) { spawn(l.file, l.args, { detached: true, stdio: 'ignore', env: l.env }).unref(); return { ok: true, message: 'Claude Desktop instance launched' }; }
   const r = await run(l.file, l.args, { env: l.env });
   return r.ok ? { ok: true, message: 'Claude Desktop instance launched' } : { ok: false, message: /Unable to find application/i.test(r.error) ? 'Claude Desktop is not installed. Command copied.' : `Launch failed: ${r.error}` };
@@ -247,12 +294,58 @@ function registerIpc(): void {
     if (Object.hasOwn(cfg.accounts, p.name)) throw new V.ValidationError(`An account named "${p.name}" already exists.`);
     ca.addAccount(cfg, p.name); return p.name;
   }));
-  handle('account:remove', p => mutate(cfg => ca.removeAccount(cfg, p.account)));
-  handle('account:rename', p => mutate(cfg => {
-    V.knownAccount(cfg, p.account);
-    if (p.name !== p.account && Object.hasOwn(cfg.accounts, p.name)) throw new V.ValidationError(`An account named "${p.name}" already exists.`);
-    ca.renameAccount(cfg, p.account, p.name); return p.name;
-  }));
+  handle('account:remove', async p => {
+    const cfg = ca.load(), acc = V.knownAccount(cfg, p.account), name = p.account;
+    ca.removeAccount(structuredClone(cfg), name);              // refuses while repositories are bound to it
+    if (p.purge && LAUNCH_DISABLED) throw new ca.CaError('Signing out is disabled in demo mode. To remove the account and keep its folders, turn off "Sign out and move its folders to the Trash".');
+    let folders = p.purge ? ca.ownFolders(cfg, name) : [];
+    const all = new Set([acc.config_dir, acc.desktop_user_data_dir, acc.docker_config_dir].map(ca.norm)).size;
+    // The sign-in goes before its folder: the macOS Keychain files it under the folder's path, so an account added later
+    // at that path would find it. One in a folder another account uses stays. On Windows it is a file in the folder.
+    const signs = !IS_WIN && folders.includes(ca.norm(acc.config_dir));
+    if (p.purge && IS_MAC) {
+      const open = L.desktopPids(acc);
+      if (!open) throw new ca.CaError(`Couldn't check whether Claude Desktop is open for ${name}, so nothing was removed. Try again.`);
+      if (open.length) throw new ca.CaError(`Quit Claude Desktop for ${name} first, then remove it.`);
+    }
+    if (signs) {
+      signingIn.delete(acc.config_dir);                         // so no sign-in check runs to write it back
+      await asking.get(acc.config_dir);
+      await userPathReady;
+      const out = await ca.signOut(acc, { env: baseEnv() });
+      if (!out.ok) throw new ca.CaError(`Couldn't sign ${name} out (${out.error}), so nothing was removed. To remove it and keep its folders, turn off "Sign out and move its folders to the Trash".`);
+    }
+    mutate(c => {
+      // the config can change while it signs out: only folders that are still its own alone go
+      const still = p.purge && Object.hasOwn(c.accounts, name) ? ca.ownFolders(c, name) : [];
+      ca.removeAccount(c, name);
+      folders = folders.filter(f => still.includes(f));
+    });
+    for (const m of [auth, asking, signingIn]) m.delete(acc.config_dir);
+    let stuck = false;
+    for (const f of ca.trashList(folders)) if (fs.existsSync(f)) await shell.trashItem(f).catch(() => { stuck = true; });
+    syncLaunchers();                                            // its launcher goes too
+    if (!p.purge) return `${name} removed. Its folders are still on disk.`;
+    if (stuck) return `${name} removed, but some of its folders couldn't be moved to the Trash. They're in ${path.join(ca.baseDir(), 'accounts').replace(os.homedir(), '~')}.`;
+    return folders.length === all ? `${name} removed. ${signs ? "It's signed out, and its" : 'Its'} folders are in the Trash.`
+      : `${name} removed. Folders it shares with another account, or outside Claude Accounts' folder, stay where they are.`;
+  });
+  handle('account:dock', async p => {
+    const cfg = ca.load(), acc = V.knownAccount(cfg, p.account), o = launcherOpts();
+    if (!o) throw new ca.CaError('Dock launchers need macOS and a build of Claude Accounts that has them.');
+    if (p.keep) await L.keepInDock(cfg, p.account, o); else await L.dropFromDock(acc, o);
+    await lookAtDock();
+    return p.keep ? `${L.appName(p.account)} is in the Dock` : `${L.appName(p.account)} is out of the Dock`;
+  });
+  handle('account:rename', p => {
+    const name = mutate(cfg => {
+      V.knownAccount(cfg, p.account);
+      if (p.name !== p.account && Object.hasOwn(cfg.accounts, p.name)) throw new V.ValidationError(`An account named "${p.name}" already exists.`);
+      ca.renameAccount(cfg, p.account, p.name); return p.name;
+    });
+    syncLaunchers();                                            // its launcher takes the new name
+    return name;
+  });
   handle('repo:bind', p => mutate(cfg => { V.knownAccount(cfg, p.account); return ca.bind(cfg, p.repo, p.account, p.mode); }));
   handle('repo:unbind', p => mutate(cfg => { V.boundRepo(cfg, p.repo); ca.unbind(cfg, p.repo); }));
   handle('dialog:pickRepo', async () => {
@@ -416,6 +509,7 @@ function createWindow(): void {
   w.loadFile(RENDERER, { query: { platform: PREVIEW || process.platform } });
   w.once('ready-to-show', () => w.show());
   w.on('closed', () => { win = null; });
+  w.on('focus', () => void lookAtDock());
   const wc = w.webContents;
   wc.on('did-finish-load', () => { for (const ev of waiting.splice(0)) event(ev); });
   wc.on('will-navigate', e => e.preventDefault());
@@ -431,7 +525,7 @@ function watchConfig(): void {
   try {
     fs.watch(dir, { persistent: false }, (_e, f) => {
       if (f && f !== 'config.json') return;
-      clearTimeout(t); t = setTimeout(() => { refreshTray(); event({ type: 'state-changed' }); }, 150);
+      clearTimeout(t); t = setTimeout(() => { refreshTray(); syncLaunchers(); event({ type: 'state-changed' }); }, 150);
     });
   } catch {}
 }
@@ -451,4 +545,5 @@ app.whenReady().then(async () => {
   registerIpc(); buildMenu(); createWindow(); watchConfig();
   await userPathReady;
   refreshTray();
+  syncLaunchers();                                              // after an update, launchers get the new program
 });

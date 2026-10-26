@@ -23,7 +23,7 @@ if (!only || only === 'main') {
   await page.click('.row[data-i="1"] .row-actions .btn.ghost'); await shot(page, '5-row-menu-dark'); await page.keyboard.press('Escape');
   await page.keyboard.press('Meta+2'); await page.waitForSelector('.card'); await page.waitForTimeout(1200);
   await shot(page, '2-accounts-dark');
-  await page.keyboard.press('Meta+1'); await page.keyboard.press('Meta+k'); await page.keyboard.type('acme');
+  await page.keyboard.press('Meta+1'); await page.keyboard.press('Meta+k'); await page.waitForSelector('.pal-input input'); await page.waitForTimeout(250); await page.keyboard.type('acme');
   await shot(page, '3-command-palette-dark');
   await page.keyboard.press('Escape'); await page.keyboard.press('Meta+k');
   await shot(page, '3b-command-palette-all-dark');

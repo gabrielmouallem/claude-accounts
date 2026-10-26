@@ -131,6 +131,28 @@ function inUse(cfg: Config, dir: string): boolean {
   return Object.values(cfg.accounts).some(a => [a.config_dir, a.desktop_user_data_dir, a.docker_config_dir]
     .some(p => { const l = norm(p).toLowerCase(); return l === d || l.startsWith(d + path.sep); }));
 }
+// The folders removing account `name` may take away: its own, inside Claude Accounts' accounts folder, that no other
+// account uses, holds or sits in. A folder it was given elsewhere stays where it is.
+export function ownFolders(cfg: Config, name: string): string[] {
+  const acc = cfg.accounts[name]!, root = norm(path.join(baseDir(), 'accounts')).toLowerCase() + path.sep;
+  const theirs = Object.entries(cfg.accounts).filter(([n]) => n !== name)
+    .flatMap(([, a]) => [a.config_dir, a.desktop_user_data_dir, a.docker_config_dir]).map(p => norm(p).toLowerCase());
+  return [...new Set([acc.config_dir, acc.desktop_user_data_dir, acc.docker_config_dir].map(d => norm(d)))].filter(d => {
+    const l = d.toLowerCase();
+    return l.startsWith(root) && !theirs.some(t => t === l || t.startsWith(l + path.sep) || l.startsWith(t + path.sep));
+  });
+}
+// What goes to the Trash for ownFolders(): the folder in accounts/ that holds them when nothing else is in it, so the
+// Trash shows the account's name, or else each folder.
+export function trashList(dirs: readonly string[]): string[] {
+  const root = norm(path.join(baseDir(), 'accounts')).toLowerCase() + path.sep, mine = new Set(dirs.map(d => d.toLowerCase()));
+  return [...new Set(dirs.map(d => {
+    const parent = path.dirname(d);
+    if (!parent.toLowerCase().startsWith(root)) return d;
+    try { return fs.readdirSync(parent).every(e => e === '.DS_Store' || mine.has(path.join(parent, e).toLowerCase())) ? parent : d; }
+    catch { return d; }
+  }))];
+}
 // The repositories bound to the account move with it. Its folders stay where they are: Claude Code finds a macOS
 // sign-in in the Keychain by the folder's path, so moving them would sign the account out.
 export function renameAccount(cfg: Config, from: string, to: string): void {
@@ -212,6 +234,17 @@ export function authStatus(acc: Account, { claude = 'claude', env = process.env,
       });
   });
 }
+// Signs an account out of Claude Code: `claude auth logout` revokes the sign-in and deletes it, and on macOS the
+// Keychain files it under a hash of the folder's path. So it runs before the folder goes; otherwise an account added
+// later at the same path would find that sign-in. It exits 0 when there is nothing to sign out, and it writes files
+// into the folder. The error is never claude's own words, which could quote a damaged file.
+export function signOut(acc: Account, { claude = 'claude', env = process.env }: { claude?: string; env?: Env } = {}): Promise<{ ok: boolean; error: string }> {
+  const quiet = { ...withoutVars(claudeEnv(acc, env), ...Object.keys(QUIET)), ...QUIET };
+  return new Promise(resolve => execFile(claude, ['auth', 'logout'], { env: quiet, cwd: os.homedir(), timeout: 30000 }, err => resolve({
+    ok: !err,
+    error: !err ? '' : err.code === 'ENOENT' ? "the claude command wasn't found" : err.killed ? 'it took over 30 seconds' : `claude exited with code ${err.code ?? err.signal}`,
+  })));
+}
 // `claude auth status` prints JSON ({ loggedIn, email, subscriptionType, orgName, … }), which a notice may follow.
 // Older versions print text, whose first line is "Login method: …" or "Not logged in…". Only those four fields are
 // kept, and none of the answer's text: the note is always one of the fixed ones below.
@@ -243,8 +276,9 @@ export function withoutVars(base: Env, ...names: string[]): Env {
   return Object.fromEntries(Object.entries(base).filter(([k]) => !names.includes(k.toUpperCase())));
 }
 export function claudeEnv(acc: Account, base: Env = process.env): Env {
-  // a global ANTHROPIC_API_KEY would override the subscription login
-  return { ...withoutVars(base, 'ANTHROPIC_API_KEY', 'CLAUDE_CONFIG_DIR'), CLAUDE_CONFIG_DIR: acc.config_dir };
+  // a global ANTHROPIC_API_KEY would override the subscription login, and CLAUDE_SECURESTORAGE_CONFIG_DIR would file
+  // every account's macOS sign-in under one folder's hash
+  return { ...withoutVars(base, 'ANTHROPIC_API_KEY', 'CLAUDE_CONFIG_DIR', 'CLAUDE_SECURESTORAGE_CONFIG_DIR'), CLAUDE_CONFIG_DIR: acc.config_dir };
 }
 // `worktree`: null for none, '' to let Claude Code name it
 export function claudeArgv(worktree: string | null = null, extra: readonly string[] = []): string[] {

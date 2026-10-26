@@ -16,6 +16,9 @@ import { execFileSync, spawn } from 'node:child_process';
 import { build } from './build.ts';
 
 const ROOT = path.join(import.meta.dirname, '..');
+// Once per run: a script that launches the app several times (screenshots.ts) builds it the first time only
+let built: Promise<void> | undefined;
+const buildOnce = () => built ??= build();
 // Required from Node, the electron package gives the path of its binary.
 const ELECTRON = createRequire(import.meta.url)('electron') as string;
 type Theme = 'dark' | 'light';
@@ -45,7 +48,7 @@ export function prepare({ demo = true, dir, theme }: { demo?: boolean; dir?: str
 interface LaunchOptions { demo?: boolean; theme?: Theme; dir?: string; preview?: boolean; args?: string[] }
 export async function launch({ demo = true, theme = 'dark', dir, preview = false, args = [] }: LaunchOptions = {}) {
   const { _electron } = await import('playwright-core');
-  await build();
+  await buildOnce();
   const s = prepare({ demo, dir, theme });
   const linux = process.platform === 'linux';
   const env = { ...s.env, ...(preview ? { CA_PREVIEW_PLATFORM: 'darwin' } : {}), ...(linux ? { DISPLAY: process.env.DISPLAY || ':99' } : {}) };

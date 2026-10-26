@@ -277,9 +277,9 @@ function renderAccounts() {
       ['copy', 'Copy Desktop command', () => copyText(a.desktop_cmd)],
       ['copy', 'Copy config dir path', () => copyText(a.config_dir, 'Path')],
       ['folderOpen', IS_MAC ? 'Reveal folder in Finder' : 'Open folder', () => api.reveal({ target: 'account', account: a.name })],
+      !d.dock ? null : a.launcher?.docked ? ['pinOff', 'Remove from Dock', () => setDock(a, false)] : ['pin', 'Keep in Dock', () => setDock(a, true)],
       '-',
-      ['trash', 'Remove from list…', () => confirmModal(`Remove “${a.name}”?`, 'Removes the account from config.json. Its folders (login, history, Desktop data) are kept on disk.', 'Remove',
-        () => act(() => api.removeAccount(a.name), `${a.name} removed`)), null, true],
+      ['trash', 'Remove account…', () => removeModal(a), null, true],
     ]); });
     const loggedIn = a.login === 'logged-in';
     return h('div', { class: 'card' },
@@ -290,7 +290,8 @@ function renderAccounts() {
         h('span', { class: 'k' }, 'Container'), h('div', {}, loginBadge(a.docker_login)),
         h('span', { class: 'k' }, 'Repositories'), h('div', { class: 'v', title: repos.join(', ') },
           repos.length ? (repos.length > 3 ? `${repos.slice(0, 3).join(', ')} +${repos.length - 3}` : repos.join(', ')) : h('span', { class: 'faint' }, 'None yet')),
-        h('span', { class: 'k' }, 'Config dir'), pathEl(a.config_dir, 'path', 40)),
+        h('span', { class: 'k' }, 'Config dir'), pathEl(a.config_dir, 'path', 40),
+        d.dock ? [h('span', { class: 'k' }, 'Dock'), dockValue(a)] : null),
       a.signingIn && !loggedIn ? h('div', { class: 'deep' }, icon('info', 13), h('span', {}, 'Finish the sign-in in your browser. This card updates by itself.')) : null,
       h('div', { class: 'card-foot' },
         h('button', { class: `btn sm ${loggedIn ? '' : 'outline-accent'}`, onclick: () => launch(() => api.login(a.name)) }, icon('logIn', 13), loggedIn ? 'Re-sign in' : 'Sign in'),
@@ -301,6 +302,37 @@ function renderAccounts() {
     : h('div', { class: 'empty' }, h('div', { class: 'ill' }, icon('users', 24)), h('h3', {}, 'No accounts'),
       h('p', {}, 'Each account gets its own private config folder, so logins never mix.'), h('button', { class: 'btn primary lg', onclick: addAccountModal }, icon('userPlus', 15), 'Add account'));
   return [head, h('div', { class: 'content' }, content)];
+}
+// The account's launcher in the Dock: the word on its icon
+function dockValue(a: AccountView) {
+  const l = a.launcher;
+  if (l?.docked) return h('div', { class: 'v' }, `${l.label}, in the Dock`);
+  return h('div', {}, h('button', { class: 'btn ghost sm', title: 'Adds an app for this account to the Dock, with its name on its icon', onclick: () => setDock(a, true) },
+    icon('pin', 13), 'Keep in Dock'));
+}
+async function setDock(a: AccountView, keep: boolean) {
+  try { toast('ok', await api.setDock(a.name, keep)); await refresh(); } catch (e) { toast('bad', errText(e)); }
+}
+// Removing an account signs it out and deletes its own folders unless you turn that off. Repositories that open with
+// it have to move first.
+function removeModal(a: AccountView) {
+  const title = `Remove “${a.name}”?`, them = a.repoCount === 1 ? 'it' : 'them';
+  if (a.repoCount) return modal(title, 'trash', h('p', {}, `${a.repoCount === 1 ? 'A repository opens' : `${a.repoCount} repositories open`} with this account. Bind ${them} to another account or unbind ${them} first.`),
+    h('button', { class: 'btn', onclick: closeOverlay }, 'OK'));
+  let purge = true;
+  const says = () => purge ? `Signs it out of Claude Code on this ${IS_MAC ? 'Mac' : 'computer'}, then moves its folders to the Trash: its Claude Code settings and history, its Claude Desktop data and its container sign-in.`
+    : 'Its folders stay on disk, and Claude Code stays signed in with them.';
+  const note = h('div', { class: 'd' }, says());
+  const sw: HTMLButtonElement = h('button', { class: 'switch on', role: 'switch', 'aria-checked': 'true', 'aria-label': 'Sign out and move its folders to the Trash', onclick: () => {
+    purge = !purge; sw.classList.toggle('on', purge); sw.setAttribute('aria-checked', String(purge)); note.textContent = says();
+  } });
+  modal(title, 'trash', [h('p', {}, 'Removes the account from Claude Accounts.'),
+    h('div', { class: 'setting' }, h('div', { class: 'txt' }, h('div', { class: 't' }, 'Sign out and move its folders to the Trash'), note), sw)],
+    [h('button', { class: 'btn', onclick: closeOverlay }, 'Cancel'),
+     h('button', { class: 'btn primary', onclick: async () => {
+       closeOverlay();
+       try { toast('ok', await api.removeAccount(a.name, purge)); await refresh(); } catch (e) { toast('bad', errText(e)); }
+     } }, 'Remove account')]);
 }
 function renderSettings() {
   const d = data(), p = d.prefs;
@@ -540,6 +572,8 @@ function paletteItems(): PaletteItem[] {
     items.push({ group: 'Accounts', icon: 'monitor', label: `Sign in to Claude Desktop…`, sub: a.name, account: a.name, run: () => desktopGuide(a, () => api.desktop(a.name)), keys: `desktop sign in login ${id}` });
     items.push({ group: 'Accounts', icon: 'logIn', label: `Sign in`, sub: a.name, account: a.name, run: () => launch(() => api.login(a.name)), keys: `login sign in ${id}` });
     items.push({ group: 'Accounts', icon: 'pencil', label: `Rename account…`, sub: a.name, account: a.name, run: () => renameModal(a.name), keys: `rename account ${id}` });
+    if (d.dock) items.push({ group: 'Accounts', icon: a.launcher?.docked ? 'pinOff' : 'pin', label: a.launcher?.docked ? 'Remove from Dock' : 'Keep in Dock',
+                             sub: a.name, account: a.name, run: () => setDock(a, !a.launcher?.docked), keys: `dock pin launcher ${id}` });
   }
   items.push(
     { group: 'General', icon: 'link', label: 'Bind repository…', hint: [MOD, 'N'], run: bindModal, keys: 'bind add repository new' },

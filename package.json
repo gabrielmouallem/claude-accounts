@@ -61,6 +61,7 @@
     "files": [
       "out/**/*",
       "!out/cli/**",
+      "!out/launcher/**",
       "build/icon.png",
       "build/tray.png",
       "build/trayTemplate.png",
@@ -95,6 +96,10 @@
         {
           "from": "out/cli/darwin-${arch}",
           "to": "cli"
+        },
+        {
+          "from": "out/launcher",
+          "to": "launcher"
         }
       ],
       "category": "public.app-category.developer-tools",
