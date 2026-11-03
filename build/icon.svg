@@ -3,24 +3,17 @@
     <linearGradient id="bg" x1="0" y1="100" x2="0" y2="924" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#2b2b30"/><stop offset="1" stop-color="#09090b"/></linearGradient>
     <radialGradient id="sheen" cx="512" cy="100" r="640" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#fff" stop-opacity="0.1"/><stop offset="0.125" stop-color="#fff" stop-opacity="0.0957"/><stop offset="0.25" stop-color="#fff" stop-opacity="0.0844"/><stop offset="0.375" stop-color="#fff" stop-opacity="0.0684"/><stop offset="0.5" stop-color="#fff" stop-opacity="0.05"/><stop offset="0.625" stop-color="#fff" stop-opacity="0.0316"/><stop offset="0.75" stop-color="#fff" stop-opacity="0.0156"/><stop offset="0.875" stop-color="#fff" stop-opacity="0.0043"/><stop offset="1" stop-color="#fff" stop-opacity="0"/></radialGradient>
     <linearGradient id="rim" x1="0" y1="100" x2="0" y2="924" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#fff" stop-opacity="0.22"/><stop offset="0.4" stop-color="#fff" stop-opacity="0.03"/><stop offset="1" stop-color="#fff" stop-opacity="0.06"/></linearGradient>
-    <linearGradient id="ring" x1="0" y1="302" x2="0" y2="722" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#ffffff"/><stop offset="0.55" stop-color="#ececef"/><stop offset="1" stop-color="#b9b9c1"/></linearGradient>
-    <linearGradient id="lens" x1="0" y1="387.50100402011265" x2="0" y2="636.4989959798874" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#d9fa96"/><stop offset="0.35" stop-color="#b5ee4a"/><stop offset="0.75" stop-color="#84cc16"/><stop offset="1" stop-color="#5d9612"/></linearGradient>
-    <linearGradient id="bevel" x1="0" y1="387.50100402011265" x2="0" y2="512" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#fff" stop-opacity="0.5"/><stop offset="1" stop-color="#fff" stop-opacity="0"/></linearGradient>
+    <linearGradient id="ring" x1="0" y1="236" x2="0" y2="656" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#ffffff"/><stop offset="0.55" stop-color="#ececef"/><stop offset="1" stop-color="#b9b9c1"/></linearGradient>
+    <linearGradient id="accent" x1="0" y1="388" x2="0" y2="772" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#d9fa96"/><stop offset="0.35" stop-color="#b5ee4a"/><stop offset="0.75" stop-color="#84cc16"/><stop offset="1" stop-color="#5d9612"/></linearGradient>
     <clipPath id="sq"><rect x="100" y="100" width="824" height="824" rx="186"/></clipPath>
-    <clipPath id="la"><circle cx="418" cy="512" r="156"/></clipPath>
-    <clipPath id="lb"><circle cx="606" cy="512" r="156"/></clipPath>
-    <filter id="glow" x="-150%" y="-80%" width="400%" height="260%"><feGaussianBlur stdDeviation="44"/></filter>
+    <mask id="behind" maskUnits="userSpaceOnUse" x="0" y="0" width="1024" height="1024">
+      <rect width="1024" height="1024" fill="#fff"/><circle cx="436" cy="580" r="216" fill="#000"/></mask>
     <filter id="sh" x="-20%" y="-20%" width="140%" height="150%"><feGaussianBlur stdDeviation="22"/></filter>
   </defs>
   <rect x="100" y="118" width="824" height="824" rx="186" fill="#000" opacity="0.36" filter="url(#sh)"/>
   <rect x="100" y="100" width="824" height="824" rx="186" fill="url(#bg)"/>
-  <g clip-path="url(#sq)">
-    <rect x="100" y="100" width="824" height="824" fill="url(#sheen)"/>
-    <ellipse cx="512" cy="512" rx="96" ry="170.49899597988733" fill="#a3e635" opacity="0.42" filter="url(#glow)"/>
-  </g>
-  <circle cx="418" cy="512" r="156" fill="url(#lens)" clip-path="url(#lb)"/>
-  <circle cx="418" cy="512" r="156" fill="none" stroke="url(#bevel)" stroke-width="7" clip-path="url(#lb)"/>
-  <circle cx="606" cy="512" r="156" fill="none" stroke="url(#bevel)" stroke-width="7" clip-path="url(#la)"/>
-  <g fill="none" stroke="url(#ring)" stroke-width="40"><circle cx="418" cy="512" r="190"/><circle cx="606" cy="512" r="190"/></g>
+  <g clip-path="url(#sq)"><rect x="100" y="100" width="824" height="824" fill="url(#sheen)"/></g>
+  <circle cx="600" cy="446" r="170" fill="none" stroke="url(#ring)" stroke-width="40" mask="url(#behind)"/>
+  <circle cx="436" cy="580" r="192" fill="url(#accent)"/>
   <rect x="101.5" y="101.5" width="821" height="821" rx="184.5" fill="none" stroke="url(#rim)" stroke-width="3"/>
 </svg>

@@ -1,5 +1,5 @@
 {
-  "//": "Account names both src/core.js and cli/ca must accept or refuse. Read by both test suites.",
+  "//": "Account names both src/core.ts and cli/ca must accept or refuse. Read by both test suites.",
   "valid": [
     "work",
     "personal",

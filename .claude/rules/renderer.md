@@ -7,11 +7,15 @@ paths:
 
 - **DOM:**
   - Build it with `h(tag, attrs, ...kids)`. Data only ever becomes text nodes or attribute values, never markup.
-  - `icon(name, size)` in `icons.js` draws the app's own Lucide-style set. To add an icon, add a static path to `ICONS`.
+  - `icon(name, size)` in `icons.ts` draws the app's own Lucide-style set. To add an icon, add a static path to `ICONS`;
+    `IconName` picks it up.
   - `logoMark()` is an `<img>` of `mark.svg`, which `npm run icons` draws. Don't edit `mark.svg` by hand.
 - **CSP:** `style-src 'self'` blocks `style="…"` attributes and `<style>` tags. Style with classes, or with
   `el.style.x = …` (CSSOM), which the CSP allows. Nothing loads from outside the app.
-- **State** lives in `S`. `render()` redraws the main view on window focus and whenever `config.json` changes, so keep
+- **Build:** esbuild bundles `app.ts` and what it imports into one `out/renderer/app.js`, and copies the files in
+  `STATIC` (`scripts/build.ts`) next to it. The renderer has its own tsconfig, with the DOM and without Node, and shares
+  only types with the rest (`../types.ts`).
+- **State** lives in `S`. Code that runs once the state has loaded reads it with `data()`. `render()` redraws the main view on window focus and whenever `config.json` changes, so keep
   anything typed in state as it is typed (`oninput`). The onboarding's `o.name` is the example.
 - **API calls:** every `window.ca.*` call can reject. Go through `act()` / `launch()`, or catch and `toast('bad', …)`.
 - **Platform:**
