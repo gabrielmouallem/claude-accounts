@@ -1,7 +1,8 @@
 // The app each account can keep in the Dock. src/launchers.ts builds one bundle per account around this program, with
 // the account's name, folders and icon in the bundle. The same program does the work those bundles need:
 //
-//   (opened as a launcher)                      opens the account's Claude Desktop, or brings it forward
+//   (opened as a launcher)                      opens the account's Claude Desktop, or brings it forward, and opens it
+//                                               again after it closes for an update (see "Claude's updates")
 //   --render-icon <file.icns> <label>           draws an account's icon
 //   --dock-list                                 prints the launchers kept in the Dock
 //   --dock-add <id> <app> <label>               keeps a launcher in the Dock, or points its tile at a moved bundle
@@ -235,13 +236,19 @@ func arguments(of pid: pid_t) -> [String] {
     }
     return out
 }
-func userDataDir(of pid: pid_t) -> String? {
-    let args = arguments(of: pid)
+func userDataDir(in args: [String]) -> String? {
     for (i, a) in args.enumerated() {
         if a.hasPrefix("--user-data-dir=") { return String(a.dropFirst("--user-data-dir=".count)) }
         if a == "--user-data-dir", i + 1 < args.count { return args[i + 1] }
     }
     return nil
+}
+// The folder a Claude keeps its data in: its --user-data-dir, or without one Claude's default folder, which no account
+// uses unless you set one up there. nil when its arguments can't be read.
+let NO_ACCOUNT = (NSHomeDirectory() as NSString).appendingPathComponent("Library/Application Support/Claude")
+func profile(of pid: pid_t) -> String? {
+    let args = arguments(of: pid)
+    return args.isEmpty ? nil : userDataDir(in: args) ?? NO_ACCOUNT
 }
 // Folder names ignore case on macOS, and a temp folder is a symlink into /private.
 func samePath(_ a: String, _ b: String) -> Bool {
@@ -261,6 +268,117 @@ func hasWindowOnScreen(_ pid: pid_t) -> Bool {
     }
 }
 
+// ---------------------------------------------------------------- Claude's updates
+// Claude Desktop updates itself with Squirrel. Once an update has downloaded, its helper ShipIt waits for every Claude
+// opened from Claude.app to quit, swaps in the new app, and after Restart to update opens Claude again. Every
+// account's Claude is one of those Claudes. So an account that restarts for an update stays closed until every other
+// account's Claude closes too. Opened again before then, it runs the old version, and Claude counts the update as
+// failed. And ShipIt then opens Claude on its default folder, not on the accounts that closed.
+//
+// So a launcher whose Claude closes for an update stays open, its Dock icon badged, waits for ShipIt to finish, and
+// opens that Claude again on the new version. Clicked meanwhile, it offers to quit the other Claudes and update now.
+
+let SHIPIT_LABEL = CLAUDE_ID + ".ShipIt"            // ShipIt's launchd job, and its first argument while it waits
+let SHIPIT_STATE = (NSHomeDirectory() as NSString).appendingPathComponent("Library/Caches/\(SHIPIT_LABEL)/ShipItState.plist")
+let SHIPIT_LAUNCH = "___launch___"                  // its first argument when it opens the new Claude
+// What the launchers share while an update waits, private like the account folders
+let UPDATES = (NSHomeDirectory() as NSString).appendingPathComponent("Library/Caches/\(LAUNCHER_PREFIX)updates")
+// Written by a launcher's Update now as it quits the other Claudes, so that their launchers wait for the update too
+let UPDATE_NOW = (UPDATES as NSString).appendingPathComponent("update-now")
+
+func allPids() -> [pid_t] {
+    let n = proc_listallpids(nil, 0)
+    guard n > 0 else { return [] }
+    var pids = [pid_t](repeating: 0, count: Int(n) + 64)          // room for processes started since
+    let got = pids.withUnsafeMutableBytes { proc_listallpids($0.baseAddress, Int32($0.count)) }
+    return Array(pids.prefix(max(0, Int(got))))
+}
+func processName(_ pid: pid_t) -> String {
+    var buf = [CChar](repeating: 0, count: 256)
+    guard proc_name(pid, &buf, UInt32(buf.count)) > 0 else { return "" }
+    return String(decoding: buf.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }, as: UTF8.self)
+}
+func startDate(of pid: pid_t) -> Date? {
+    var info = kinfo_proc(), size = MemoryLayout<kinfo_proc>.stride
+    var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, pid]
+    guard sysctl(&mib, 4, &info, &size, nil, 0) == 0, size > 0 else { return nil }
+    let t = info.kp_proc.p_un.__p_starttime
+    return Date(timeIntervalSince1970: TimeInterval(t.tv_sec) + TimeInterval(t.tv_usec) / 1_000_000)
+}
+func modified(_ path: String) -> Date? { (try? FileManager.default.attributesOfItem(atPath: path))?[.modificationDate] as? Date }
+func bundleVersion(_ app: String) -> String? {
+    NSDictionary(contentsOfFile: (app as NSString).appendingPathComponent("Contents/Info.plist"))?["CFBundleVersion"] as? String
+}
+// When a Claude last ran on a folder: Claude and Chromium write to it while it runs and as it quits. No account's
+// Claude writes to another's folder.
+func lastUsed(_ dir: String) -> Date? {
+    let names = (try? FileManager.default.contentsOfDirectory(atPath: dir)) ?? []
+    return ([dir] + names.map { (dir as NSString).appendingPathComponent($0) }).compactMap(modified).max()
+}
+
+// What ShipIt is doing for a Claude.app. While it waits and then installs, its arguments are its launchd label and its
+// state file. It then starts another ShipIt, with the launch signal and the app, to open the new Claude. ShipIt runs as
+// root for an app you can't write to, and its arguments can't be read then: launchers quit with their Claude as before.
+// Only Claude's own state file counts, so a process that calls itself ShipIt can't point a launcher at another file.
+struct ShipIt {
+    var waiting = false, opening = false, started: Date? = nil
+    var busy: Bool { waiting || opening }
+}
+func shipIt(for claudeApp: String) -> ShipIt {
+    var s = ShipIt()
+    for pid in allPids() where processName(pid) == "ShipIt" {
+        let a = arguments(of: pid)
+        guard a.count >= 3 else { continue }
+        if a[1] == SHIPIT_LABEL && samePath(a[2], SHIPIT_STATE) { s.waiting = true; s.started = startDate(of: pid) }
+        else if a[1] == SHIPIT_LAUNCH && samePath(a[2], claudeApp) { s.opening = true }
+    }
+    return s
+}
+// When a Claude asked ShipIt to open Claude again after the update (Restart to update, or the restart Claude makes by
+// itself when it's idle): the time ShipIt's state file was written then. nil when no restart was asked for, which is
+// how a download leaves it.
+func restartAsked(_ claudeApp: String) -> Date? {
+    guard let data = FileManager.default.contents(atPath: SHIPIT_STATE), let state = dictionary(data),
+          state["launchAfterInstallation"] as? Bool == true, state["bundleIdentifier"] as? String == CLAUDE_ID,
+          let target = (state["targetBundleURL"] as? String).flatMap(URL.init(string:)), samePath(target.path, claudeApp)
+    else { return nil }
+    return modified(SHIPIT_STATE)
+}
+func dictionary(_ data: Data) -> [String: Any]? {
+    if let d = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] { return d }
+    return (try? PropertyListSerialization.propertyList(from: data, format: nil)) as? [String: Any]
+}
+// An update waits to restart Claude: an account opened now would run the old version
+func restartPending(_ claudeApp: String) -> Bool {
+    shipIt(for: claudeApp).waiting && restartAsked(claudeApp) != nil
+}
+// Claims a one-time job among the launchers, such as quitting a Claude, which several of them could see at once: the
+// first to create its file gets it. Files from earlier updates go after a day.
+func claim(_ job: String) -> Bool {
+    try? FileManager.default.createDirectory(atPath: UPDATES, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+    for name in (try? FileManager.default.contentsOfDirectory(atPath: UPDATES)) ?? [] where name.hasPrefix("claim-") {
+        let p = (UPDATES as NSString).appendingPathComponent(name)
+        if let d = modified(p), Date().timeIntervalSince(d) > 86400 { try? FileManager.default.removeItem(atPath: p) }
+    }
+    let fd = Darwin.open((UPDATES as NSString).appendingPathComponent("claim-\(job)"), O_CREAT | O_EXCL | O_WRONLY, 0o600)
+    if fd >= 0 { close(fd) }
+    return fd >= 0
+}
+// Accounts whose Dock app is running: their Claude opens again after an update
+func launcherFolders() -> [String] {
+    NSWorkspace.shared.runningApplications.compactMap {
+        guard $0.bundleIdentifier?.hasPrefix(LAUNCHER_PREFIX) == true, let url = $0.bundleURL else { return nil }
+        return NSDictionary(contentsOfFile: url.appendingPathComponent("Contents/Info.plist").path)?["CAUserDataDir"] as? String
+    }
+}
+func installedClaude() -> String? { NSWorkspace.shared.urlForApplication(withBundleIdentifier: CLAUDE_ID)?.path }
+// The Claudes ShipIt waits for: every one opened from that Claude.app
+func runningClaudes(at claudeApp: String) -> [NSRunningApplication] {
+    NSWorkspace.shared.runningApplications.filter {
+        $0.bundleIdentifier == CLAUDE_ID && !$0.isTerminated && ($0.bundleURL.map { samePath($0.path, claudeApp) } ?? false)
+    }
+}
+
 final class Launcher: NSObject, NSApplicationDelegate {
     let info = Bundle.main.infoDictionary ?? [:]
     let noGuide: Bool, attachOnly: Bool
@@ -269,6 +387,13 @@ final class Launcher: NSObject, NSApplicationDelegate {
     var exitWatch: DispatchSourceProcess?, quietExit: DispatchSourceSignal?
     var launching = false, quitting = false, alerting = false
     var lastFocus = Date.distantPast, launchedAt = Date.distantPast
+    var claudeApp = "", claudeVersion: String?          // the Claude.app its Claude runs from, and its version then
+    // while it waits for an update
+    var waitTimer: Timer?, waitSince = Date.distantPast, versionBefore: String?
+    var shipItSince: Date?, lastBusy = Date.distantPast, quietSince: Date?, sawOpening = false
+    // Claudes on no account open before ShipIt could have opened one, when that folder last changed, and whether it's in use
+    var noAccountYours = Set<pid_t>(), noAccountUsed: Date?, noAccountInUse = false
+    var waiting: Bool { waitTimer != nil }
 
     init(flags: Set<String>) {
         noGuide = flags.contains("--no-guide")      // Claude Accounts showed its own sign-in guide
@@ -297,13 +422,14 @@ final class Launcher: NSObject, NSApplicationDelegate {
             attach(open)
             if !attachOnly { focus(open) }
         } else if attachOnly {
-            NSApp.terminate(nil)
+            // rebuilt while it waited for an update, which may be installing now: it waits on
+            if let app = installedClaude(), shipIt(for: app).busy { claudeApp = app; waitForUpdate(since: Date()) } else { NSApp.terminate(nil) }
         } else {
-            openClaude()
+            open()
         }
     }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        if let c = claude { focus(c) } else if !launching && !alerting { openClaude() }
+        if let c = claude { focus(c) } else if !launching && !alerting { if waiting { askAboutUpdate() } else { open() } }
         return false
     }
     // Switching to the launcher, with Command-Tab say, switches to its Claude.
@@ -330,10 +456,13 @@ final class Launcher: NSObject, NSApplicationDelegate {
 
     // config.json is the truth: an account can be renamed or removed with ca while Claude Accounts is closed. When it
     // can't be read, the bundle's own values stand.
-    func accountStillThere() -> Bool {
+    func configAccounts() -> [String: Any]? {
         guard let path = info["CAConfigPath"] as? String, let data = FileManager.default.contents(atPath: path),
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let accounts = json["accounts"] as? [String: Any] else { return true }
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+        return json["accounts"] as? [String: Any]
+    }
+    func accountStillThere() -> Bool {
+        guard let accounts = configAccounts() else { return true }
         for (n, value) in accounts {
             guard let a = value as? [String: Any], let d = a["desktop_user_data_dir"] as? String, samePath(d, desktopDir) else { continue }
             account = n
@@ -355,11 +484,23 @@ final class Launcher: NSObject, NSApplicationDelegate {
 
     func findClaude() -> NSRunningApplication? {
         NSWorkspace.shared.runningApplications.first {
-            $0.bundleIdentifier == CLAUDE_ID && !$0.isTerminated && userDataDir(of: $0.processIdentifier).map { samePath($0, desktopDir) } == true
+            $0.bundleIdentifier == CLAUDE_ID && !$0.isTerminated && profile(of: $0.processIdentifier).map { samePath($0, desktopDir) } == true
         }
     }
 
-    func openClaude() {
+    // Opened by you, from the Dock, Spotlight or Claude Accounts. While an update waits to restart Claude, this account
+    // would open on the old version, so it waits for the update with the others, and asks.
+    func open() {
+        if let app = installedClaude(), restartPending(app) {
+            claudeApp = app
+            waitForUpdate(since: Date())
+            askAboutUpdate()
+        } else {
+            openClaude()
+        }
+    }
+
+    func openClaude(activate: Bool = true) {
         let empty = (try? FileManager.default.contentsOfDirectory(atPath: desktopDir))?.isEmpty ?? true
         if empty && !noGuide && !signInGuide() { if claude == nil { NSApp.terminate(nil) }; return }
         guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: CLAUDE_ID) else {
@@ -373,6 +514,7 @@ final class Launcher: NSObject, NSApplicationDelegate {
         c.arguments = ["--user-data-dir=\(desktopDir)"]
         c.environment = ["CLAUDE_CONFIG_DIR": configDir]
         c.addsToRecentItems = false
+        c.activates = activate
         launching = true
         launchedAt = Date()
         NSWorkspace.shared.openApplication(at: url, configuration: c) { app, error in
@@ -385,6 +527,7 @@ final class Launcher: NSObject, NSApplicationDelegate {
 
     func attach(_ app: NSRunningApplication) {
         claude = app
+        if let path = app.bundleURL?.path { claudeApp = path; claudeVersion = bundleVersion(path) }
         let s = DispatchSource.makeProcessSource(identifier: app.processIdentifier, eventMask: .exit, queue: .main)
         s.setEventHandler { [weak self] in self?.claudeExited() }
         s.resume(); exitWatch = s
@@ -393,8 +536,140 @@ final class Launcher: NSObject, NSApplicationDelegate {
     func claudeExited() {
         guard claude != nil else { return }
         exitWatch?.cancel(); exitWatch = nil; claude = nil
-        if quitting { NSApp.reply(toApplicationShouldTerminate: true) } else { NSApp.terminate(nil) }
+        if quitting { NSApp.reply(toApplicationShouldTerminate: true) }
+        else if closedForUpdate() { waitForUpdate(since: Date()) }
+        else { NSApp.terminate(nil) }
     }
+
+    // ---------------------------------------------------------------- waiting for an update
+    // Its Claude closed for an update when, in the half minute before, a restart after the update was asked for (by
+    // this Claude, or by another launcher's Update now), and the update is still to come or has just gone in. Claude
+    // quits a second or two after it asks.
+    func closedForUpdate() -> Bool {
+        guard !claudeApp.isEmpty else { return false }
+        let recent = { (d: Date?) in d.map { Date().timeIntervalSince($0) < 30 } ?? false }
+        guard recent(restartAsked(claudeApp)) || (restartAsked(claudeApp) != nil && recent(modified(UPDATE_NOW))) else { return false }
+        return shipIt(for: claudeApp).busy || bundleVersion(claudeApp) != claudeVersion
+    }
+
+    func waitForUpdate(since: Date) {
+        guard !waiting else { return }
+        let s = shipIt(for: claudeApp)
+        waitSince = since
+        versionBefore = claudeVersion ?? bundleVersion(claudeApp)
+        shipItSince = s.started
+        lastBusy = s.busy ? since : .distantPast
+        quietSince = nil; sawOpening = s.opening
+        noAccountYours = Set(noAccountClaudes().filter { ($0.launchDate ?? .distantPast) <= since }.map(\.processIdentifier))
+        noAccountUsed = lastUsed(NO_ACCOUNT); noAccountInUse = false
+        NSApp.dockTile.badgeLabel = "↻"
+        let t = Timer(timeInterval: 2, repeats: true) { [weak self] _ in self?.checkUpdate() }
+        RunLoop.main.add(t, forMode: .common)                 // and while an alert is open
+        waitTimer = t
+    }
+    func stopWaiting() {
+        waitTimer?.invalidate(); waitTimer = nil
+        NSApp.dockTile.badgeLabel = nil
+    }
+    func checkUpdate() {
+        let s = shipIt(for: claudeApp), now = Date(), noAccount = noAccountClaudes()
+        let age = { (app: NSRunningApplication) in now.timeIntervalSince(app.launchDate ?? .distantPast) }
+        // A Claude on no account that has run a while is one you use, not the one ShipIt opens when it's done
+        if noAccount.contains(where: { age($0) > 30 }) { noAccountInUse = true }
+        if s.busy {
+            lastBusy = now; quietSince = nil
+            if s.opening { sawOpening = true }
+            if let t = s.started { shipItSince = min(shipItSince ?? t, t) }      // a newer download starts ShipIt again
+            // Until the new version is in, a Claude on no account can't be the one ShipIt opens: it's yours
+            if s.waiting && !s.opening && bundleVersion(claudeApp) == versionBefore {
+                noAccountYours.formUnion(noAccount.map(\.processIdentifier))
+            }
+            // until ShipIt opens a Claude there, which writes to the folder too
+            if !noAccount.contains(where: { age($0) < 30 && !noAccountYours.contains($0.processIdentifier) }) { noAccountUsed = lastUsed(NO_ACCOUNT) }
+            return
+        }
+        let quiet = quietSince ?? now
+        quietSince = quiet
+        // Done a poll after the new version is in or ShipIt opened Claude. Otherwise ShipIt may have failed, and
+        // launchd starts it again within about 10 seconds, so it waits longer before opening the old version.
+        let landed = sawOpening || bundleVersion(claudeApp) != versionBefore
+        if (landed && now > quiet) || now.timeIntervalSince(quiet) >= 15 { updateDone(landed: landed) }
+    }
+    // ShipIt is done, or gave up. Once done, it may have opened Claude on its default folder: that one quits again,
+    // unless a Claude on that folder was in use while the update waited, or an account uses that folder. Then this
+    // account's Claude opens, if the account is still there: it may have been removed with ca meanwhile.
+    func updateDone(landed: Bool) {
+        stopWaiting()
+        let now = Date()
+        var used = !landed || noAccountInUse || !noAccountYours.isEmpty || shipItSince == nil || isAccountFolder(NO_ACCOUNT)
+        if let u = noAccountUsed, let s = shipItSince, u > s { used = true }
+        if !used {
+            // the one ShipIt opened: started around ShipIt's last moments, and only just. One launcher quits it, since
+            // Chromium takes a second SIGTERM as a kill.
+            for app in noAccountClaudes() where !noAccountYours.contains(app.processIdentifier) {
+                guard let d = app.launchDate, d > lastBusy.addingTimeInterval(-10), now.timeIntervalSince(d) < 30,
+                      claim("quit-\(app.processIdentifier)-\(Int(d.timeIntervalSince1970))") else { continue }
+                kill(app.processIdentifier, SIGTERM)
+            }
+        }
+        guard accountStillThere() else { NSApp.terminate(nil); return }
+        if let open = findClaude() { attach(open) } else { openClaude(activate: false) }
+    }
+    func noAccountClaudes() -> [NSRunningApplication] {
+        runningClaudes(at: claudeApp).filter { profile(of: $0.processIdentifier).map { samePath($0, NO_ACCOUNT) } == true }
+    }
+
+    // Clicked while it waits. The update installs once every Claude has quit, so it names the ones still open, and which
+    // of them open again by themselves: an account whose Dock app is running, and Claude on its default folder, which
+    // ShipIt opens.
+    func askAboutUpdate() {
+        let others = runningClaudes(at: claudeApp)
+        guard !others.isEmpty else { return }                  // none left: ShipIt is installing it
+        let docked = launcherFolders()
+        var all = Set<String>(), back = Set<String>()
+        for app in others {
+            let dir = profile(of: app.processIdentifier), name = accountName(of: dir)
+            all.insert(name)
+            if let dir, samePath(dir, NO_ACCOUNT) || docked.contains(where: { samePath($0, dir) }) { back.insert(name) }
+        }
+        let gone = all.subtracting(back)
+        let after = gone.isEmpty ? "They open again after the update."
+            : back.isEmpty ? "Open them again yourself after the update."
+            : "\(list(back)) open again after the update. Open \(list(gone)) yourself."
+        let chosen = ask("Claude for \(account) is waiting for an update",
+                         """
+                         The update installs once every Claude has quit, and \(account) then opens on the new version. Still open: \(list(all)).
+
+                         Update now quits them, which stops any work running in them. \(after)
+                         """, ["Wait", "Update now", "Open without updating"], destructive: "Update now")
+        guard waiting else { return }                          // the update went in while you read
+        switch chosen {
+        case .alertSecondButtonReturn:
+            // the Claudes you were shown, if they still run: a pid may belong to something else by now
+            let shown = Dictionary(others.map { ($0.processIdentifier, $0.launchDate) }, uniquingKeysWith: { a, _ in a })
+            try? FileManager.default.createDirectory(atPath: UPDATES, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+            FileManager.default.createFile(atPath: UPDATE_NOW, contents: Data(), attributes: [.posixPermissions: 0o600])
+            for app in runningClaudes(at: claudeApp) where shown[app.processIdentifier].map({ $0 == app.launchDate }) == true {
+                let d = Int(app.launchDate?.timeIntervalSince1970 ?? 0)
+                if claim("quit-\(app.processIdentifier)-\(d)") { kill(app.processIdentifier, SIGTERM) }   // quits as from its menu
+            }
+        case .alertThirdButtonReturn:
+            stopWaiting()
+            openClaude()
+        default:
+            break
+        }
+    }
+    func list(_ names: Set<String>) -> String { names.sorted().joined(separator: ", ") }
+    func accountName(of dir: String?) -> String {
+        if let dir, let accounts = configAccounts() {
+            for (n, value) in accounts {
+                if let d = (value as? [String: Any])?["desktop_user_data_dir"] as? String, samePath(d, dir) { return n }
+            }
+        }
+        return "Claude outside Claude Accounts"
+    }
+    func isAccountFolder(_ dir: String) -> Bool { accountName(of: dir) != accountName(of: nil) }
 
     func focus(_ app: NSRunningApplication) {
         guard Date().timeIntervalSince(lastFocus) > 0.5 else { return }   // a Dock click both activates and reopens
@@ -456,13 +731,17 @@ final class Launcher: NSObject, NSApplicationDelegate {
         _ = ask(title, text, ["OK"])
         if claude == nil { NSApp.terminate(nil) }
     }
-    func ask(_ title: String, _ text: String, _ buttons: [String]) -> NSApplication.ModalResponse {
+    // `destructive` names a button that stops work. The first button is the default, which Return presses.
+    func ask(_ title: String, _ text: String, _ buttons: [String], destructive: String? = nil) -> NSApplication.ModalResponse {
         alerting = true
         defer { alerting = false }
         let a = NSAlert()
         a.messageText = title
         a.informativeText = text
-        for b in buttons { a.addButton(withTitle: b) }
+        for b in buttons {
+            let button = a.addButton(withTitle: b)
+            if b == destructive { button.hasDestructiveAction = true }
+        }
         NSApp.activate(ignoringOtherApps: true)
         return a.runModal()
     }

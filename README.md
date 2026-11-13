@@ -123,6 +123,11 @@ click "work (Claude)"
   ⌘Tab switches to its Claude. Claude keeps running after you close its last window. If it comes forward with no
   window on screen, the Dock app sends it the reopen event that a click on Claude's own Dock icon sends. macOS asks
   you once whether it may (see [Troubleshooting](#troubleshooting)).
+- **Through Claude's updates.** Claude Desktop installs an update only once every Claude has quit, every account's
+  included, and then opens Claude on no account. So when an account's Claude closes to restart for an update, its Dock
+  app stays open with a ↻ badge, waits for the update to go in, and opens that account's Claude again on the new
+  version. It quits the Claude the update opened on no account, unless you were using one. Click the Dock app
+  meanwhile to see which Claudes the update is waiting for, and to quit them and update now.
 - **Claude Accounts opens Desktop through it.** For an account with a Dock app, opening a repository that opens with
   Claude Desktop brings that account's Claude forward instead of starting a second one.
 - **Kept in step with your accounts.** Renaming an account rebuilds its Dock app under the new name, in the same place
@@ -389,6 +394,19 @@ Remove it with **Sign out and move its folders to the Trash** on, which is the d
 for the account first, which deletes its sign-in from the Keychain, and then moves its folders to the Trash. Deleting the folder by hand
 leaves that sign-in in the Keychain, filed under the folder's path, so an account added later with the same name finds
 itself signed in. If that happened, add the account again, then remove it with the option on.
+</details>
+
+<details>
+<summary><strong>Claude Desktop says an update didn't install</strong></summary>
+
+Claude Desktop updates itself only once every Claude has quit, and each account's Claude counts. If one account
+restarts for an update while another is still open, the update waits. Open the first account again before then and
+it runs the old version, so Claude counts the update as failed.
+
+Dock apps handle this: an account that closes for an update waits, badged ↻, and opens again once the update is in.
+Click it to see which Claudes the update waits for, and to quit them and update now. An account opened another way,
+without its Dock app, doesn't wait. To catch up by hand, quit every Claude, including one on no account, and open
+them again.
 </details>
 
 <details>

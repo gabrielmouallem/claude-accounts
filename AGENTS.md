@@ -18,7 +18,7 @@ containers. Sessions run on the account's subscription, never on an API key.
 | `cli/ca.ts` | The CLI the app bundles and installs: TypeScript on `src/core.ts`, compiled with Bun by `scripts/build-cli.ts` |
 | `cli/ca` | The older CLI as one Python file, stdlib only, for use without the app. `cli/ca.ts` replaces it |
 | `src/launchers.ts` | Dock launchers (macOS): one small app per account in `~/Applications/Claude Accounts`, built, renamed and removed with the account |
-| `launcher/launcher.swift` | The program inside every launcher. It also draws their icons and edits the Dock (`--render-icon`, `--dock-*`) |
+| `launcher/launcher.swift` | The program inside every launcher, which also waits out Claude Desktop's updates and reopens its Claude after one. It also draws their icons and edits the Dock (`--render-icon`, `--dock-*`) |
 | `test/` | `node:test` suite. `core.test.ts` also checks parity with the Python CLI; `cli.test.ts` runs the compiled one; `windows.test.ts` runs only on Windows |
 | `cli/test_ca.py` | `unittest` suite for the Python CLI |
 | `scripts/` | `build.ts` (esbuild), `build-cli.ts` (the bundled `ca`), `build-launcher.ts` (the launchers' program, needs Xcode's tools), `icon-art.ts` (the icon's source), `make-icons.ts`, `sandbox.ts`, `screenshots.ts`, `demo-config.sh` |
