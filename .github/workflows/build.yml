@@ -13,7 +13,7 @@ permissions:
 
 jobs:
   test:
-    # Windows runs test/windows.test.js, which drives the real cmd.exe.
+    # Windows runs test/windows.test.ts, which drives the real cmd.exe.
     strategy:
       fail-fast: false
       matrix:
@@ -22,10 +22,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
-        with: { node-version: 22, cache: npm }
+        with: { node-version: 24, cache: npm }
       - uses: actions/setup-python@v5
         with: { python-version: '3.12' }
       - run: npm ci
+      - run: npm run typecheck
+      - run: npm run build
       - run: npm test
       - run: python -m unittest discover -s cli -p "test_*.py" -v
 
@@ -36,11 +38,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
-        with: { node-version: 22, cache: npm }
+        with: { node-version: 24, cache: npm }
       - run: npm ci
       # Unsigned build (arm64 + x64, dmg + zip). For signing/notarization set CSC_LINK,
       # CSC_KEY_PASSWORD, APPLE_ID, APPLE_APP_SPECIFIC_PASSWORD, APPLE_TEAM_ID secrets and
       # remove "identity": null from package.json.
+      - run: npm run build
       - run: npx electron-builder --mac --arm64 --x64 --publish never
       - uses: actions/upload-artifact@v4
         with:
@@ -57,8 +60,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
-        with: { node-version: 22, cache: npm }
+        with: { node-version: 24, cache: npm }
       - run: npm ci
+      - run: npm run build
       - run: npx electron-builder --win --x64 --publish never
       - uses: actions/upload-artifact@v4
         with:

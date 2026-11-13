@@ -7,20 +7,20 @@ existence; their contents are never read, logged or transmitted.
 """
 # The shell hook runs `ca env --shell` before every prompt, so only what that needs loads up front. argparse,
 # hashlib and subprocess load where they are used; up front they doubled its start-up time.
-import json, os, re, shlex, sys
+import errno, json, os, re, shlex, sys
 
 HOME = os.path.expanduser("~")
 CONFIG_PATH = os.environ.get("CA_CONFIG") or os.path.join(HOME, ".config", "claude-accounts", "config.json")
 BASE_DIR = os.path.dirname(CONFIG_PATH)
 MODES = ("terminal", "docker", "desktop")
 IMAGE = "claude-code-ca:latest"
-SYSTEM = {"darwin": "Darwin", "win32": "Windows"}.get(sys.platform, "Linux")  # same rule as src/core.js
-# Same rule as the app (src/core.js): a letter or number first, then letters, numbers, dot, dash or underscore; 64 at most.
+SYSTEM = {"darwin": "Darwin", "win32": "Windows"}.get(sys.platform, "Linux")  # same rule as src/core.ts
+# Same rule as the app (src/core.ts): a letter or number first, then letters, numbers, dot, dash or underscore; 64 at most.
 ACCOUNT_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 # Account names become folder names, and Windows can't use these: it drops a trailing dot (so "work." would share
 # "work"), and device names such as con or nul, with or without an extension, aren't folders at all.
 WINDOWS_DEVICE = re.compile(r"(con|prn|aux|nul|com[0-9]|lpt[0-9])(\.|$)", re.I)
-# Same rule as worktree() in src/validate.js.
+# Same rule as worktree in src/validate.ts.
 WORKTREE_RE = re.compile(r"[A-Za-z0-9._/-]{1,100}")
 # cmd.exe treats these as syntax outside quotes (see win_quote)
 CMD_SPECIAL = re.compile(r'[\s&|<>^(),;=!"%]')
@@ -29,7 +29,7 @@ CMD_META = re.compile(r'["&|<>^%!()\r\n]')
 # Windows PATH entries that name a drive or a server; cmd reads any other (".", "\tools") against the current folder
 WIN_ABS_DIR = re.compile(r'"?([A-Za-z]:[\\/]|\\\\[^\\/])')
 # The Windows lines ca prints are for cmd: they start with @, which PowerShell can't parse, and stop cmd from running a
-# program from the current folder by name. Same as src/core.js.
+# program from the current folder by name. Same as src/core.ts.
 WIN_NO_CWD = 'set "NoDefaultCurrentDirectoryInExePath=1"'
 
 DOCKERFILE = """FROM node:24-slim
@@ -65,6 +65,29 @@ def save(cfg):
 def norm(p):
     return os.path.realpath(os.path.expanduser(p))
 
+def in_use(cfg, d):
+    """Whether an account's folders are d or inside it, as real paths. Folder names ignore case on macOS and Windows."""
+    d = norm(d).lower()
+    return any(p == d or p.startswith(d + os.sep) for a in cfg["accounts"].values()
+               for p in (norm(a[k]).lower() for k in ("config_dir", "desktop_user_data_dir", "docker_config_dir") if a.get(k)))
+
+def append_no_follow(path, text):
+    """Appends without following a symbolic link: a repository can ship .envrc as a link to a file of yours.
+    Returns whether the file is new."""
+    refuse = f"{path} is a symbolic link, so ca won't write to it. Remove the link, or add this line yourself:\n{text.rstrip()}"
+    if os.path.islink(path): raise SystemExit(refuse)
+    created = True
+    try:
+        try:
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o666)
+        except FileExistsError:
+            fd, created = os.open(path, os.O_WRONLY | os.O_APPEND | getattr(os, "O_NOFOLLOW", 0)), False
+    except OSError as e:
+        if e.errno == errno.ELOOP: raise SystemExit(refuse)
+        raise
+    with os.fdopen(fd, "a", encoding="utf-8") as f: f.write(text)
+    return created
+
 def valid_account_name(name):
     return (isinstance(name, str) and ACCOUNT_RE.fullmatch(name) is not None and not name.endswith(".")
             and WINDOWS_DEVICE.match(name) is None)
@@ -80,13 +103,19 @@ def add_account(cfg, name, config_dir=None, desktop_dir=None, docker_dir=None):
     same = next((n for n in cfg["accounts"] if n != name and n.lower() == name.lower()), None)
     if same:  # folders ignore case on macOS and Windows, so both names would share one login
         raise SystemExit(f"account {same!r} already exists")
-    root = os.path.join(BASE_DIR, "accounts", name)
+    # Adding an account that exists keeps its folders, except the ones given. A new account gets folders of its own:
+    # a renamed account keeps its folders and a removed one leaves them behind, so the folder named after this
+    # account can still hold another account's sign-in.
+    had = cfg["accounts"].get(name) or {}
+    root, i = os.path.join(BASE_DIR, "accounts", name), 2
+    while not had and (in_use(cfg, root) or os.path.exists(root)):
+        root, i = os.path.join(BASE_DIR, "accounts", f"{name}-{i}"), i + 1
     acc = {
-        "config_dir": norm(config_dir or os.path.join(root, "claude")),
-        "desktop_user_data_dir": norm(desktop_dir or os.path.join(root, "desktop")),
+        "config_dir": norm(config_dir or had.get("config_dir") or os.path.join(root, "claude")),
+        "desktop_user_data_dir": norm(desktop_dir or had.get("desktop_user_data_dir") or os.path.join(root, "desktop")),
         # separate dir for container logins: on macOS the host login lives in the
         # Keychain, which a Linux container cannot see, so containers log in themselves.
-        "docker_config_dir": norm(docker_dir or os.path.join(root, "docker-claude")),
+        "docker_config_dir": norm(docker_dir or had.get("docker_config_dir") or os.path.join(root, "docker-claude")),
     }
     for d in acc.values():
         os.makedirs(d, mode=0o700, exist_ok=True)
@@ -150,9 +179,10 @@ def deep_status(acc):
 
 # ---------------------------------------------------------------- commands
 def claude_env(acc, base=None):
-    # Every spelling goes, since Windows ignores case in names. A global key would override the subscription login.
+    # Every spelling goes, since Windows ignores case in names. A global key would override the subscription login, and
+    # CLAUDE_SECURESTORAGE_CONFIG_DIR would file every account's macOS sign-in under one folder's hash.
     env = {k: v for k, v in (os.environ if base is None else base).items()
-           if k.upper() not in ("ANTHROPIC_API_KEY", "CLAUDE_CONFIG_DIR")}
+           if k.upper() not in ("ANTHROPIC_API_KEY", "CLAUDE_CONFIG_DIR", "CLAUDE_SECURESTORAGE_CONFIG_DIR")}
     env["CLAUDE_CONFIG_DIR"] = acc["config_dir"]
     return env
 
@@ -175,7 +205,7 @@ def program(name):
     return None
 
 def absolute_dirs(value):
-    """The Windows PATH entries that name a drive or a server. Same rule as src/core.js."""
+    """The Windows PATH entries that name a drive or a server. Same rule as src/core.ts."""
     return ";".join(d for d in value.split(";") if WIN_ABS_DIR.match(d))
 
 def windows_env(env):
@@ -223,7 +253,8 @@ def terminal_cmd(repo, acc, worktree=None, extra=(), system=SYSTEM):
 def login_cmd(acc, system=SYSTEM):
     if system == "Windows":
         return f'@{WIN_NO_CWD} && set "CLAUDE_CONFIG_DIR={acc["config_dir"]}" && set "ANTHROPIC_API_KEY=" && claude auth login'
-    return f"env -u ANTHROPIC_API_KEY CLAUDE_CONFIG_DIR={q(acc['config_dir'], system)} claude auth login"
+    # From home, like `ca login`: a window Terminal reopens can start in a repository
+    return f"cd ~ && env -u ANTHROPIC_API_KEY CLAUDE_CONFIG_DIR={q(acc['config_dir'], system)} claude auth login"
 
 def desktop_cmd(acc, system=SYSTEM):
     ud, cd = acc["desktop_user_data_dir"], acc["config_dir"]
@@ -282,7 +313,7 @@ def shell_hook(kind, repo=None, cfg=None):
     raise SystemExit("kind must be direnv|zsh|bash")
 
 # The shell hook keeps a CLAUDE_CONFIG_DIR you set yourself: it is saved when you enter a bound repo and put
-# back when you leave, and a shell that never entered one is left alone. Same text as envShell in src/core.js.
+# back when you leave, and a shell that never entered one is left alone. Same text as envShell in src/core.ts.
 ENV_ENTER = ('if [ -z "${CA_ACCOUNT+x}" ] && [ -n "${CLAUDE_CONFIG_DIR+x}" ]; then '
              'export CA_OUTER_CLAUDE_CONFIG_DIR="$CLAUDE_CONFIG_DIR"; fi; ')
 ENV_LEAVE = ('if [ -n "${CA_ACCOUNT+x}" ]; then if [ -n "${CA_OUTER_CLAUDE_CONFIG_DIR+x}" ]; then '
@@ -403,8 +434,10 @@ def main(argv=None):
         out = shell_hook(a.kind, a.repo, cfg)
         if a.kind == "direnv" and a.write:
             r, _ = find_repo(cfg, a.repo)
-            with open(os.path.join(r, ".envrc"), "a") as f: f.write(out + "\n")
-            print(f"appended to {r}/.envrc; run: direnv allow {r}")
+            f, allow = os.path.join(r, ".envrc"), f"direnv allow {shlex.quote(r)}"
+            # direnv allow approves the whole file, and a file the repository ships has lines of its own
+            print(f"created {f}; run: {allow}" if append_no_follow(f, out + "\n") else
+                  f"appended to {f}, which was already there. direnv allow approves all of it, so read it first, then run: {allow}")
         else:
             print(out)
     elif a.cmd == "env":

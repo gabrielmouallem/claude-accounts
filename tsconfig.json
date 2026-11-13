@@ -1,0 +1,21 @@
+{
+  // Type checking only (npm run typecheck): esbuild builds the app, and Node runs the tests and scripts as they are,
+  // stripping the types. So the code uses only syntax that can be erased, and imports name the .ts file.
+  // The renderer has its own config (src/renderer/tsconfig.json), with the DOM and without Node.
+  "compilerOptions": {
+    "target": "es2024",
+    "lib": ["es2024"],
+    "module": "nodenext",
+    "types": ["node"],
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "verbatimModuleSyntax": true,
+    "erasableSyntaxOnly": true,
+    "allowImportingTsExtensions": true,
+    "noEmit": true,
+    "skipLibCheck": true
+  },
+  "include": ["src/*.ts", "test/**/*.ts", "scripts/**/*.ts"]
+}

@@ -1,0 +1,11 @@
+{
+  // The renderer runs in the page, sandboxed: the DOM, and no Node. It shares only types with the rest (../types.ts).
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "lib": ["es2024", "dom", "dom.iterable"],
+    "module": "preserve",
+    "moduleResolution": "bundler",
+    "types": []
+  },
+  "include": ["*.ts"]
+}
